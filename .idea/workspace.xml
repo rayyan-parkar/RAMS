@@ -4,20 +4,28 @@
     <option name="autoReloadType" value="ALL" />
   </component>
   <component name="CargoProjects">
-    <cargoProject FILE="$PROJECT_DIR$/rams/Cargo.toml">
-      <package file="$PROJECT_DIR$/rams">
-        <feature name="default" enabled="true" />
-      </package>
-    </cargoProject>
     <cargoProject FILE="$PROJECT_DIR$/src-tauri/Cargo.toml">
       <package file="$PROJECT_DIR$/src-tauri">
         <feature name="default" enabled="true" />
       </package>
     </cargoProject>
-    <cargoProject FILE="$PROJECT_DIR$/Cargo.toml" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="d406424b-08a9-47bf-a947-0ec799eb9be1" name="Changes" comment="" />
+    <list default="true" id="d406424b-08a9-47bf-a947-0ec799eb9be1" name="Changes" comment="">
+      <change beforePath="$PROJECT_DIR$/.direnv/bin/nix-direnv-reload" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.direnv/flake-inputs/01x5k4nlxcpyd85nnr0b9gm89rm8ff4x-source" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.direnv/flake-inputs/0d3h8gi2q46fb4l563h6pginjw2a90r4-source" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.direnv/flake-inputs/9hr004n51pdxwiq8j1pzbnjfvghqfm7m-source" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.direnv/flake-inputs/w2jcgb8c6yph72nsksa6zmc8qdna8ys4-source" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.direnv/flake-inputs/yj1wxm9hh8610iyzqnz75kvs6xl8j3my-source" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.direnv/flake-inputs/z6rzbj26ldbwj0klbqphz18ghwskxdmh-source" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.direnv/flake-profile-a5d5b61aa8a61b7d9d765e1daf971a9a578f1cfa" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.direnv/flake-profile-a5d5b61aa8a61b7d9d765e1daf971a9a578f1cfa.rc" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.envrc" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/flake.lock" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/flake.nix" beforeDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -76,6 +84,7 @@
       <workItem from="1773265107591" duration="12775000" />
       <workItem from="1773356845550" duration="9000" />
       <workItem from="1773581696383" duration="3518000" />
+      <workItem from="1773585402908" duration="1076000" />
     </task>
     <servers />
   </component>
