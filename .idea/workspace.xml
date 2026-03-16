@@ -12,24 +12,20 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="d406424b-08a9-47bf-a947-0ec799eb9be1" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/.direnv/bin/nix-direnv-reload" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.direnv/flake-inputs/01x5k4nlxcpyd85nnr0b9gm89rm8ff4x-source" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.direnv/flake-inputs/0d3h8gi2q46fb4l563h6pginjw2a90r4-source" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.direnv/flake-inputs/9hr004n51pdxwiq8j1pzbnjfvghqfm7m-source" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.direnv/flake-inputs/w2jcgb8c6yph72nsksa6zmc8qdna8ys4-source" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.direnv/flake-inputs/yj1wxm9hh8610iyzqnz75kvs6xl8j3my-source" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.direnv/flake-inputs/z6rzbj26ldbwj0klbqphz18ghwskxdmh-source" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.direnv/flake-profile-a5d5b61aa8a61b7d9d765e1daf971a9a578f1cfa" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.direnv/flake-profile-a5d5b61aa8a61b7d9d765e1daf971a9a578f1cfa.rc" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.envrc" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/flake.lock" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/flake.nix" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/package.json" beforeDir="false" afterPath="$PROJECT_DIR$/package.json" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
     <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="FileTemplateManagerImpl">
+    <option name="RECENT_TEMPLATES">
+      <list>
+        <option value="Rust File" />
+      </list>
+    </option>
   </component>
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
@@ -84,7 +80,7 @@
       <workItem from="1773265107591" duration="12775000" />
       <workItem from="1773356845550" duration="9000" />
       <workItem from="1773581696383" duration="3518000" />
-      <workItem from="1773585402908" duration="1076000" />
+      <workItem from="1773585402908" duration="17787000" />
     </task>
     <servers />
   </component>
