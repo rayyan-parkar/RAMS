@@ -12,8 +12,10 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="d406424b-08a9-47bf-a947-0ec799eb9be1" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/package.json" beforeDir="false" afterPath="$PROJECT_DIR$/package.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.direnv/flake-inputs/ak15c9ipwaj646qq1x41vz3wl0qqgmgj-source" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.direnv/flake-profile-a5d5b61aa8a61b7d9d765e1daf971a9a578f1cfa" beforeDir="false" afterPath="$PROJECT_DIR$/.direnv/flake-profile-a5d5b61aa8a61b7d9d765e1daf971a9a578f1cfa" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.direnv/flake-profile-a5d5b61aa8a61b7d9d765e1daf971a9a578f1cfa.rc" beforeDir="false" afterPath="$PROJECT_DIR$/.direnv/flake-profile-a5d5b61aa8a61b7d9d765e1daf971a9a578f1cfa.rc" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/flake.nix" beforeDir="false" afterPath="$PROJECT_DIR$/flake.nix" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -81,6 +83,7 @@
       <workItem from="1773356845550" duration="9000" />
       <workItem from="1773581696383" duration="3518000" />
       <workItem from="1773585402908" duration="17787000" />
+      <workItem from="1773657453882" duration="480000" />
     </task>
     <servers />
   </component>

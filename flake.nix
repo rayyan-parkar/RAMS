@@ -24,8 +24,8 @@
           gdk-pixbuf
           glib
           dbus
-          openssl_3
           librsvg
+          openssl # Use one consistent version
         ];
 
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
@@ -41,19 +41,18 @@
             rustToolchain
             cargo-tauri
             bun
-            # nodejs_20 # Bun is great, but sometimes Tauri scripts expect node
+            git      # CRITICAL: Adds Git to the environment so it uses the flake's OpenSSL
+            openssl
           ];
 
           buildInputs = libraries;
 
-          # Essential for Rust to find libraries during compilation
-          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath libraries;
-
+          # Combined fix for Compilation and Runtime
           shellHook = ''
-            export JAVA_HOME="${pkgs.zulu.home}"
-            # This ensures GSettings and themes work for the Tauri window
+            export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath libraries}:$LD_LIBRARY_PATH"
             export XDG_DATA_DIRS="$GSETTINGS_SCHEMAS_PATH"
-            echo "Rust and Tauri Shell Loaded"
+            export JAVA_HOME="${pkgs.zulu.home}"
+            echo "RAMS Dev Environment: Git + Rust + Tauri Loaded"
           '';
         };
       }
