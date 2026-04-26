@@ -23,4 +23,12 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 str0m = "0.16.2"
+tokio = { version = "1", features = ["full"], optional = true }
+tokio-tungstenite = { version = "0.26", optional = true }
+futures-util = "0.3"
 
+[features]
+default = ["quick", "hybrid", "core"]
+core = []
+hybrid = ["core"]
+quick = ["hybrid", "tokio", "tokio-tungstenite"]
