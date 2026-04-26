@@ -1,4 +1,16 @@
-mod rams_core;
+pub mod builder;
+
+#[cfg(feature = "core")]
+pub mod core;
+
+#[cfg(feature = "hybrid")]
+pub mod hybrid;
+
+#[cfg(feature = "quick")]
+pub mod quick;
+
+#[cfg(feature = "quick")]
+pub mod signaling;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
