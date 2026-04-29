@@ -1,4 +1,6 @@
 use std::sync::Arc;
+use crate::signaling::client::SignalingClient;
+use crate::signaling::protocol::SignalingMessage;
 
 /// A builder for establishing WebRTC connections.
 /// This acts as the primary configuration struct for the framework's 'quick' tier.
@@ -41,12 +43,34 @@ impl RamsBuilder {
 
         println!("RamsBuilder joining room '{}' at {}", room_key, sig_url);
 
-        // TODO
-        // 1. Establish WebSocket connection to sig_url
-        // 2. Send join message with room_key
-        // 3. Negotiate SDP
-        // 4. Return the running RamsSession
-        
-        Err("Not implemented yet".into())
+        // Establish WebSocket connection to sig_url
+        let mut client = SignalingClient::connect(sig_url).await?;
+
+        // Send join message with room_key
+        client.send(SignalingMessage::Join { room: room_key.to_string() }).await?;
+
+        // Negotiate Joined state
+        let is_initiator = loop {
+            match client.recv().await {
+                Some(SignalingMessage::Joined { room, is_initiator: init }) if room == room_key => {
+                    break init;
+                }
+                Some(SignalingMessage::Error { message }) => {
+                    return Err(format!("Signaling verification failed: {}", message));
+                }
+                None => {
+                    return Err("Signaling server abruptly disconnected while joining.".into());
+                }
+                _ => continue, // ignore intermediate messages for now
+            }
+        };
+
+        println!("Successfully joined room '{}'. Initiator mode: {}", room_key, is_initiator);
+
+        // Return the configured RamsSession
+        Ok(crate::quick::RamsSession {
+            is_initiator,
+            signaling: client,
+        })
     }
 }
