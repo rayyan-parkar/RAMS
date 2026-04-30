@@ -13,7 +13,7 @@ pub async fn send_video_chunk(chunk: Vec<u8>) -> Result<(), String> {
 
 /// Receives video chunks from Rust back over to the Svelte frontend to be played
 #[tauri::command]
-pub async fn subscribe_video(on_chunk: Channel<Vec<u8>>) -> Result<(), String> {
+pub async fn subscribe_video(_on_chunk: Channel<Vec<u8>>) -> Result<(), String> {
     // Store the Svelte-provided callback channel and push received RTP/VP8 frames to it later
     println!("Frontend subscribed to backend incoming video frames.");
     Ok(())

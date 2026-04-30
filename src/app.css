@@ -1,0 +1,98 @@
+:root {
+  --primary-glow: #00ff41; /* CRT Green */
+  --bg-color: #0c0c0c;     /* Deep terminal black */
+  --panel-bg: #111111;
+  --border-color: #333333;
+  --text-primary: #e0e0e0;
+  --text-muted: #666666;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-color);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  user-select: none;
+}
+
+/* ASCII Border Panel styling */
+.retro-panel {
+  background: var(--panel-bg);
+  border: 1px dashed var(--border-color);
+  padding: 2rem;
+  position: relative;
+  box-shadow: 0 0 10px rgba(0, 255, 65, 0.05); /* Subtle glow */
+}
+
+/* Four corner accents for tech vibe */
+.retro-panel::before, .retro-panel::after {
+  content: '+';
+  position: absolute;
+  color: var(--primary-glow);
+  font-size: 1.2rem;
+  line-height: 1;
+}
+
+.retro-panel::before { top: -8px; left: -5px; }
+.retro-panel::after { bottom: -8px; right: -5px; }
+
+h1, h2, h3 {
+  margin-top: 0;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+}
+
+h1 {
+  color: var(--primary-glow);
+  text-shadow: 0 0 5px rgba(0, 255, 65, 0.4);
+}
+
+.ascii-art {
+  white-space: pre;
+  color: var(--primary-glow);
+  font-size: 0.8rem;
+  line-height: 1.2;
+  margin-bottom: 2rem;
+  text-shadow: 0 0 3px rgba(0, 255, 65, 0.5);
+}
+
+/* Form Elements */
+input {
+  background: transparent;
+  border: none;
+  border-bottom: 1px dashed var(--text-muted);
+  color: var(--primary-glow);
+  font-family: var(--font-mono);
+  padding: 0.5rem;
+  outline: none;
+  width: 100%;
+  margin-bottom: 1rem;
+}
+
+input:focus {
+  border-bottom: 1px solid var(--primary-glow);
+}
+
+button {
+  background: transparent;
+  border: 1px solid var(--primary-glow);
+  color: var(--primary-glow);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+button:hover {
+  background: var(--primary-glow);
+  color: var(--bg-color);
+  box-shadow: 0 0 10px var(--primary-glow);
+}

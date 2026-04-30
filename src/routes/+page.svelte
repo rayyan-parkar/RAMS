@@ -1,156 +1,155 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke } from '@tauri-apps/api/core';
 
-  let name = $state("");
-  let greetMsg = $state("");
+  let roomId = $state('FYP-DEMO-2026');
+  let sigServer = $state('ws://127.0.0.1:8080');
+  let connectionState = $state('DISCONNECTED');
+  let logs: string[] = $state(['System Initialised... Ready.']);
 
-  async function greet(event: Event) {
-    event.preventDefault();
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    greetMsg = await invoke("greet", { name });
+  function log(msg: string) {
+    logs = [...logs, msg];
   }
+
+  async function connect() {
+    connectionState = 'CONNECTING';
+    log(`[SYS] establishing link to ${sigServer}...`);
+    log(`[SYS] authenticating room key: ${roomId}`);
+    
+    try {
+      // In a subsequent iteration, this will invoke the real Rust RamsBuilder 
+      // await invoke('start_rtc', { room: roomId, sigUrl: sigServer });
+      
+      setTimeout(() => {
+        connectionState = 'CONNECTED';
+        log('[OK] ICE Gathering Complete.');
+        log('[OK] WebRTC P2P Channel LIVE.');
+      }, 1500);
+    } catch (e) {
+      log(`[ERR] ${e}`);
+      connectionState = 'DISCONNECTED';
+    }
+  }
+
+  const asciiLogo = `
+  _____            __  __  _____ 
+ |  __ \\     /\\   |  \\/  |/ ____|
+ | |__) |   /  \\  | \\  / | (___  
+ |  _  /   / /\\ \\ | |\\/| |\\___ \\ 
+ | | \\ \\  / ____ \\| |  | |____) |
+ |_|  \\_\\/_/    \\_\\_|  |_|_____/ 
+                                 
+ `;
 </script>
 
-<main class="container">
-  <h1>Welcome to Tauri + Svelte</h1>
+<div class="container">
+  <div class="retro-panel">
+    <div class="ascii-art">{asciiLogo}</div>
+    
+    {#if connectionState === 'DISCONNECTED'}
+      <div class="form-group">
+        <label for="room">> ROOM_KEY</label>
+        <input id="room" type="text" bind:value={roomId} spellcheck="false" />
+        
+        <label for="sig">> SIG_SERVER_IP</label>
+        <input id="sig" type="text" bind:value={sigServer} spellcheck="false" />
+        
+        <button class="mt-4" onclick={connect}>[ INIT UPLINK ]</button>
+      </div>
+    {:else}
+      <div class="video-grid">
+        <div class="video-box local">
+          <span>> LOCAL_TX [VP8]</span>
+          <div class="placeholder glow">CAMERA ACTIVE</div>
+        </div>
+        <div class="video-box remote">
+          <span>> REMOTE_RX [VP8]</span>
+          <div class="placeholder">AWAITING FRAMES...</div>
+        </div>
+      </div>
+    {/if}
 
-  <div class="row">
-    <a href="https://vite.dev" target="_blank">
-      <img src="/vite.svg" class="logo vite" alt="Vite Logo" />
-    </a>
-    <a href="https://tauri.app" target="_blank">
-      <img src="/tauri.svg" class="logo tauri" alt="Tauri Logo" />
-    </a>
-    <a href="https://svelte.dev" target="_blank">
-      <img src="/svelte.svg" class="logo svelte-kit" alt="SvelteKit Logo" />
-    </a>
+    <div class="terminal mt-4">
+      {#each logs as l}
+        <div>> {l}</div>
+      {/each}
+      {#if connectionState === 'CONNECTING'}
+        <div class="blink">_</div>
+      {/if}
+    </div>
   </div>
-  <p>Click on the Tauri, Vite, and SvelteKit logos to learn more.</p>
-
-  <form class="row" onsubmit={greet}>
-    <input id="greet-input" placeholder="Enter a name..." bind:value={name} />
-    <button type="submit">Greet</button>
-  </form>
-  <p>{greetMsg}</p>
-</main>
+</div>
 
 <style>
-.logo.vite:hover {
-  filter: drop-shadow(0 0 2em #747bff);
-}
-
-.logo.svelte-kit:hover {
-  filter: drop-shadow(0 0 2em #ff3e00);
-}
-
-:root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
-}
-
-.container {
-  margin: 0;
-  padding-top: 10vh;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  text-align: center;
-}
-
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
-}
-
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
-}
-
-.row {
-  display: flex;
-  justify-content: center;
-}
-
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-
-a:hover {
-  color: #535bf2;
-}
-
-h1 {
-  text-align: center;
-}
-
-input,
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
-}
-
-button {
-  cursor: pointer;
-}
-
-button:hover {
-  border-color: #396cd8;
-}
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
-}
-
-input,
-button {
-  outline: none;
-}
-
-#greet-input {
-  margin-right: 5px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
+  .container {
+    width: 800px;
+    max-width: 95vw;
   }
-
-  a:hover {
-    color: #24c8db;
+  
+  .mt-4 { margin-top: 1rem; }
+  
+  .form-group label {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    margin-bottom: 0.5rem;
   }
-
-  input,
-  button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
+  
+  .video-grid {
+    display: flex;
+    gap: 1.5rem;
   }
-  button:active {
-    background-color: #0f0f0f69;
+  
+  .video-box {
+    border: 1px dashed var(--border-color);
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    padding: 0.5rem;
+    position: relative;
   }
-}
-
+  
+  .video-box span {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-bottom: 0.5rem;
+    border-bottom: 1px dashed var(--border-color);
+    padding-bottom: 0.2rem;
+    display: block;
+  }
+  
+  .placeholder {
+    height: 250px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    background: #050505;
+  }
+  
+  .placeholder.glow {
+    color: var(--primary-glow);
+    text-shadow: 0 0 5px rgba(0, 255, 65, 0.4);
+  }
+  
+  .terminal {
+    height: 120px;
+    background: #050505;
+    border: 1px dashed var(--border-color);
+    padding: 0.8rem;
+    font-size: 0.8rem;
+    overflow-y: auto;
+    color: var(--text-muted);
+    display: flex;
+    flex-direction: column;
+  }
+  
+  .blink {
+    animation: blinker 1s linear infinite;
+    color: var(--primary-glow);
+  }
+  
+  @keyframes blinker {
+    50% { opacity: 0; }
+  }
 </style>

@@ -3,7 +3,7 @@ use tokio::time::interval;
 
 /// A simulator task that generates dummy 30fps media payloads
 /// Useful for fairly benchmarking the native WebRTC stack without Tauri IPC bottlenecks.
-pub async fn run_video_simulator(mut writer_channel: tokio::sync::mpsc::Sender<Vec<u8>>) {
+pub async fn run_video_simulator(writer_channel: tokio::sync::mpsc::Sender<Vec<u8>>) {
     println!("Started Video Frame Simulator (30fps)");
     let mut ticker = interval(Duration::from_millis(33)); // ~30 fps
     

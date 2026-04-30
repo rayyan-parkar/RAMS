@@ -10,11 +10,11 @@ pub struct StateMachine {
 impl StateMachine {
     /// Create a new sans-IO StateMachine wrapper
     pub fn new() -> Result<Self, RtcError> {
-        let mut config = RtcConfig::new();
+        let config = RtcConfig::new();
         // Potential future config properties could be exposed here independently of str0m
         
         Ok(Self {
-            rtc: config.build(),
+            rtc: config.build(std::time::Instant::now()),
         })
     }
 }

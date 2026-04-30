@@ -45,8 +45,9 @@ impl EventLoop {
                             if let Ok((n, source)) = result {
                                 // We received UDP bytes from a peer. Feed them into the str0m instance.
                                 // It will unpack the packets to update state or produce DataChannel events.
-                                let recv = str0m::net::Receive::new(source, local_addr, &buf[..n]);
-                                let _ = self.session.state_machine.rtc.handle_input(str0m::Input::Receive(Instant::now(), recv));
+                                if let Ok(recv) = str0m::net::Receive::new(str0m::net::Protocol::Udp, source, local_addr, &buf[..n]) {
+                                    let _ = self.session.state_machine.rtc.handle_input(str0m::Input::Receive(Instant::now(), recv));
+                                }
                             }
                         }
                         Some(signaling_msg) = self.signaling.recv() => {
@@ -64,7 +65,6 @@ impl EventLoop {
                         str0m::Event::Connected => println!("WebRTC Connected Successfully!"),
                         // TODO: You will intercept Candidate events here and send them via self.signaling!
                         str0m::Event::IceConnectionStateChange(state) => println!("ICE State: {:?}", state),
-                        str0m::Event::PeerConnectionStateChange(state) => println!("PC State: {:?}", state),
                         _ => println!("str0m Event: {:?}", e),
                     }
                 }
