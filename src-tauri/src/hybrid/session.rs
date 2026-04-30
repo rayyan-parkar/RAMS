@@ -1,7 +1,8 @@
 use crate::core::state_machine::StateMachine;
 use crate::signaling::protocol::SignalingMessage;
 use str0m::change::Change;
-use str0m::{Sdp, Candidate};
+use str0m::media::{Direction, MediaKind};
+use str0m::{Candidate, Sdp};
 
 /// HybridSession acts as an intermediate state manager.
 /// It owns a core RamsEngine and knows how to translate SignalingMessage objects
@@ -16,6 +17,17 @@ impl HybridSession {
         Ok(Self {
             state_machine: StateMachine::new()?,
         })
+    }
+
+    /// Advertises media tracks for the upcoming SDP offer
+    pub fn add_media_tracks(&mut self, audio: bool, video: bool) {
+        let mut change = self.state_machine.rtc.sdp_api();
+        if audio {
+            change.add_media(MediaKind::Audio, Direction::SendRecv, None, None);
+        }
+        if video {
+            change.add_media(MediaKind::Video, Direction::SendRecv, None, None);
+        }
     }
 
     /// Feeds incoming out-of-band signaling messages into the WebRTC state machine

@@ -7,6 +7,9 @@ pub mod core;
 pub mod hybrid;
 
 #[cfg(feature = "quick")]
+pub mod media;
+
+#[cfg(feature = "quick")]
 pub mod quick;
 
 #[cfg(feature = "quick")]
@@ -22,7 +25,11 @@ fn greet(name: &str) -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            media::ipc::send_video_chunk,
+            media::ipc::subscribe_video
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
