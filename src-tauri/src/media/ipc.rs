@@ -1,20 +1,22 @@
 use tauri::ipc::Channel;
+use tokio::sync::mpsc::UnboundedSender;
 
-/// IPC handlers for buffering real video chunks from the Svelte frontend.
-/// 
-/// In a live environment, Svelte uses MediaRecorder to capture webm chunks,
-/// translates them to Uint8Arrays, and streams them here.
+/// Receives video chunks from the Svelte frontend and routes them to the demuxer thread.
 #[tauri::command]
-pub async fn send_video_chunk(chunk: Vec<u8>) -> Result<(), String> {
-    // TODO: I need to route this payload to our running EventLoop via a channel.
-    println!("Received IPC video chunk of size {} bytes", chunk.len());
+pub async fn send_video_chunk(
+    chunk: Vec<u8>,
+    sender: tauri::State<'_, UnboundedSender<Vec<u8>>>
+) -> Result<(), String> {
+    if let Err(e) = sender.send(chunk) {
+        println!("Failed to route video chunk to demuxer: {:?}", e);
+    }
     Ok(())
 }
 
-/// Receives video chunks from Rust back over to the Svelte frontend to be played
+/// Subscribes the Svelte frontend to receive remote video chunks from Rust.
 #[tauri::command]
-pub async fn subscribe_video(_on_chunk: Channel<Vec<u8>>) -> Result<(), String> {
-    // Store the Svelte-provided callback channel and push received RTP/VP8 frames to it later
-    println!("Frontend subscribed to backend incoming video frames.");
+pub fn subscribe_video(_on_chunk: Channel<Vec<u8>>) -> Result<(), String> {
+    // In future iterations, we will route incoming RTP frames to this channel.
+    println!("Frontend subscribed to Remote Video!");
     Ok(())
 }

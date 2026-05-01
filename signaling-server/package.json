@@ -1,0 +1,13 @@
+{
+  "name": "rams-signaling",
+  "version": "1.0.0",
+  "description": "Minimal WebSocket Room Signaling Server for RAMS",
+  "main": "server.ts",
+  "scripts": {
+    "start": "bun run server.ts"
+  },
+  "dependencies": {
+    "ws": "^8.16.0",
+    "@types/ws": "^8.5.10"
+  }
+}

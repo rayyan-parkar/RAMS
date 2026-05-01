@@ -1,3 +1,4 @@
+use crate::hybrid::session::HybridSession;
 use crate::signaling::client::SignalingClient;
 use crate::signaling::protocol::SignalingMessage;
 
@@ -5,14 +6,19 @@ use crate::signaling::protocol::SignalingMessage;
 /// This acts as the primary configuration struct for the framework's 'quick' tier.
 #[derive(Debug, Default, Clone)]
 pub struct RamsBuilder {
-    audio: bool,
-    video: bool,
+    pub audio: bool,
+    pub video: bool,
     signaling_url: Option<String>,
 }
 
 impl RamsBuilder {
     pub fn new() -> Self {
-        Self::default()
+        // Default to video enabled since that's the primary use case
+        Self {
+            audio: false,
+            video: true,
+            ..Self::default()
+        }
     }
 
     /// Enable or disable audio track processing
@@ -27,14 +33,13 @@ impl RamsBuilder {
         self
     }
 
-    /// Sets the URL of the signaling server (for e.g. "ws://localhost:8080")
+    /// Sets the URL of the signaling server (e.g. "ws://localhost:8090")
     pub fn with_signaling<S: Into<String>>(mut self, url: S) -> Self {
         self.signaling_url = Some(url.into());
         self
     }
 
-    /// Completes the builder configuration and joins a specific routing room via the signaling server.
-    /// This resolves into an active RamsSession in the future. 
+    /// Completes the builder configuration and joins a specific room via the signaling server.
     #[cfg(feature = "quick")]
     pub async fn join_room(self, room_key: &str) -> Result<crate::quick::RamsSession, String> {
         let sig_url = self.signaling_url.as_ref()
@@ -42,34 +47,62 @@ impl RamsBuilder {
 
         println!("RamsBuilder joining room '{}' at {}", room_key, sig_url);
 
-        // Establish WebSocket connection to sig_url
+        // Establish WebSocket connection to signaling server
         let mut client = SignalingClient::connect(sig_url).await?;
 
         // Send join message with room_key
         client.send(SignalingMessage::Join { room: room_key.to_string() }).await?;
 
-        // Negotiate Joined state
+        // Wait for Joined confirmation
         let is_initiator = loop {
             match client.recv().await {
                 Some(SignalingMessage::Joined { room, is_initiator: init }) if room == room_key => {
                     break init;
                 }
                 Some(SignalingMessage::Error { message }) => {
-                    return Err(format!("Signaling verification failed: {}", message));
+                    return Err(format!("Signaling error: {}", message));
                 }
                 None => {
-                    return Err("Signaling server abruptly disconnected while joining.".into());
+                    return Err("Signaling server disconnected while joining.".into());
                 }
-                _ => continue, // ignore intermediate messages for now
+                _ => continue,
             }
         };
 
-        println!("Successfully joined room '{}'. Initiator mode: {}", room_key, is_initiator);
+        println!("Successfully joined room '{}'. Initiator: {}", room_key, is_initiator);
 
-        // Return the configured RamsSession
         Ok(crate::quick::RamsSession {
             is_initiator,
             signaling: client,
         })
     }
+}
+
+#[tauri::command]
+pub async fn start_rtc(
+    room: String,
+    sig_url: String,
+    vp8_rx: tauri::State<'_, tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<crate::media::demuxer::Vp8Packet>>>>,
+) -> Result<(), String> {
+    println!("Starting RTC in room {}", room);
+    let builder = RamsBuilder::new().with_signaling(sig_url);
+
+    // Connect to signaling and join the room
+    let session = builder.join_room(&room).await?;
+
+    // Create the hybrid session with a fresh str0m state machine
+    let hybrid = HybridSession::new().map_err(|e| e.to_string())?;
+
+    let rx = vp8_rx.lock().await.take().ok_or("RTC already streaming!")?;
+
+    let reactor = crate::quick::event_loop::EventLoop::new(
+        hybrid,
+        session.signaling,
+        session.is_initiator,
+    );
+    tokio::spawn(async move {
+        let _ = reactor.run(rx).await;
+    });
+
+    Ok(())
 }
