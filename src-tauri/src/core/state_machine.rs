@@ -12,7 +12,7 @@ impl StateMachine {
     pub fn new() -> Result<Self, RtcError> {
         let config = RtcConfig::new();
         // Potential future config properties could be exposed here independently of str0m
-        
+
         Ok(Self {
             rtc: config.build(std::time::Instant::now()),
         })

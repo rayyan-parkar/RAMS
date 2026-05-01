@@ -1,6 +1,6 @@
+use std::sync::Arc;
 use tauri::ipc::Channel;
 use tokio::sync::mpsc::UnboundedSender;
-use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// Shared state for the frontend video channel, allowing the EventLoop
@@ -11,7 +11,7 @@ pub type RemoteVideoChannel = Arc<Mutex<Option<Channel<Vec<u8>>>>>;
 #[tauri::command]
 pub async fn send_video_chunk(
     chunk: Vec<u8>,
-    sender: tauri::State<'_, UnboundedSender<Vec<u8>>>
+    sender: tauri::State<'_, UnboundedSender<Vec<u8>>>,
 ) -> Result<(), String> {
     if let Err(e) = sender.send(chunk) {
         println!("Failed to route video chunk to event loop: {:?}", e);

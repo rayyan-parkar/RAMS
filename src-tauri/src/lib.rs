@@ -49,7 +49,7 @@ pub fn run() {
                 use tauri::Manager;
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.with_webview(|webview| {
-                        use webkit2gtk::{WebViewExt, PermissionRequestExt};
+                        use webkit2gtk::{PermissionRequestExt, WebViewExt};
                         let inner = webview.inner();
                         inner.connect_permission_request(|_, request| {
                             println!("WebKitGTK: Auto-granting permission request");

@@ -42,7 +42,9 @@ impl RamsBuilder {
     /// Completes the builder configuration and joins a specific room via the signaling server.
     #[cfg(feature = "quick")]
     pub async fn join_room(self, room_key: &str) -> Result<crate::quick::RamsSession, String> {
-        let sig_url = self.signaling_url.as_ref()
+        let sig_url = self
+            .signaling_url
+            .as_ref()
             .ok_or("Signaling URL is required to join a room.")?;
 
         println!("RamsBuilder joining room '{}' at {}", room_key, sig_url);
@@ -51,12 +53,19 @@ impl RamsBuilder {
         let mut client = SignalingClient::connect(sig_url).await?;
 
         // Send join message with room_key
-        client.send(SignalingMessage::Join { room: room_key.to_string() }).await?;
+        client
+            .send(SignalingMessage::Join {
+                room: room_key.to_string(),
+            })
+            .await?;
 
         // Wait for Joined confirmation
         let is_initiator = loop {
             match client.recv().await {
-                Some(SignalingMessage::Joined { room, is_initiator: init }) if room == room_key => {
+                Some(SignalingMessage::Joined {
+                    room,
+                    is_initiator: init,
+                }) if room == room_key => {
                     break init;
                 }
                 Some(SignalingMessage::Error { message }) => {
@@ -69,7 +78,10 @@ impl RamsBuilder {
             }
         };
 
-        println!("Successfully joined room '{}'. Initiator: {}", room_key, is_initiator);
+        println!(
+            "Successfully joined room '{}'. Initiator: {}",
+            room_key, is_initiator
+        );
 
         Ok(crate::quick::RamsSession {
             is_initiator,
@@ -94,7 +106,10 @@ pub async fn start_rtc(
     room: String,
     sig_url: String,
     app_handle: tauri::AppHandle,
-    webm_rx: tauri::State<'_, tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>>>>,
+    webm_rx: tauri::State<
+        '_,
+        tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>>>,
+    >,
     task: tauri::State<'_, RtcTask>,
     remote_video: tauri::State<'_, crate::media::ipc::RemoteVideoChannel>,
 ) -> Result<(), String> {
@@ -110,7 +125,11 @@ pub async fn start_rtc(
     let mut hybrid = HybridSession::new().map_err(|e| e.to_string())?;
     hybrid.add_media_tracks(enable_audio, enable_video);
 
-    let rx = webm_rx.lock().await.take().ok_or("RTC already streaming!")?;
+    let rx = webm_rx
+        .lock()
+        .await
+        .take()
+        .ok_or("RTC already streaming!")?;
 
     let remote_channel = remote_video.inner().clone();
 

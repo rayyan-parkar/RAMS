@@ -27,7 +27,11 @@ impl SignalingClient {
         tokio::spawn(async move {
             while let Some(msg) = tx_out.recv().await {
                 if let Ok(json) = serde_json::to_string(&msg) {
-                    if write.send(tokio_tungstenite::tungstenite::Message::Text(json.into())).await.is_err() {
+                    if write
+                        .send(tokio_tungstenite::tungstenite::Message::Text(json.into()))
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -46,7 +50,10 @@ impl SignalingClient {
                             }
                         }
                         Err(e) => {
-                            println!("[Signaling RX Error] Failed to parse JSON: {} | Data: {}", e, text);
+                            println!(
+                                "[Signaling RX Error] Failed to parse JSON: {} | Data: {}",
+                                e, text
+                            );
                         }
                     }
                 }
@@ -61,7 +68,10 @@ impl SignalingClient {
 
     /// Enqueue a message to be sent to the signaling server
     pub async fn send(&self, msg: SignalingMessage) -> Result<(), String> {
-        self.tx.send(msg).await.map_err(|_| "Client disconnected".into())
+        self.tx
+            .send(msg)
+            .await
+            .map_err(|_| "Client disconnected".into())
     }
 
     /// Wait for the next incoming signaling message

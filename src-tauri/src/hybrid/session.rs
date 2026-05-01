@@ -41,7 +41,10 @@ impl HybridSession {
             SignalingMessage::Offer { sdp } => {
                 let sdp_offer = str0m::change::SdpOffer::from_sdp_string(&sdp)
                     .map_err(|e| format!("Failed to parse SDP offer: {:?}", e))?;
-                let answer = self.state_machine.rtc.sdp_api()
+                let answer = self
+                    .state_machine
+                    .rtc
+                    .sdp_api()
                     .accept_offer(sdp_offer)
                     .map_err(|e| format!("Rejecting offer: {:?}", e))?;
                 Ok(Some(answer))
@@ -49,9 +52,13 @@ impl HybridSession {
             SignalingMessage::Answer { sdp } => {
                 let sdp_answer = str0m::change::SdpAnswer::from_sdp_string(&sdp)
                     .map_err(|e| format!("Failed to parse SDP answer: {:?}", e))?;
-                let pending = self.pending_offer.take()
+                let pending = self
+                    .pending_offer
+                    .take()
                     .ok_or_else(|| "Received Answer but no pending offer exists".to_string())?;
-                self.state_machine.rtc.sdp_api()
+                self.state_machine
+                    .rtc
+                    .sdp_api()
                     .accept_answer(pending, sdp_answer)
                     .map_err(|e| format!("Rejecting answer: {:?}", e))?;
                 Ok(None)

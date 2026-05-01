@@ -1,4 +1,4 @@
-pub mod session;
 pub mod event_loop;
-pub use session::RamsSession;
+pub mod session;
 pub use event_loop::EventLoop;
+pub use session::RamsSession;

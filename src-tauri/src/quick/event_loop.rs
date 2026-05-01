@@ -55,10 +55,16 @@ impl EventLoop {
         };
         // str0m needs to know about our local socket so it can include it as an ICE candidate
         if let Ok(candidate) = Candidate::host(local_addr, "udp") {
-            self.session.state_machine.rtc.add_local_candidate(candidate);
+            self.session
+                .state_machine
+                .rtc
+                .add_local_candidate(candidate);
             println!("Registered local ICE candidate: {}", local_addr);
         } else {
-            println!("WARNING: Failed to create host candidate from {}", local_addr);
+            println!(
+                "WARNING: Failed to create host candidate from {}",
+                local_addr
+            );
         }
     }
 
@@ -70,9 +76,8 @@ impl EventLoop {
             return Ok(bound);
         }
 
-        let detected_ip = Self::detect_local_ip().ok_or_else(|| {
-            "Unable to detect non-0.0.0.0 local IP for ICE candidate".to_string()
-        })?;
+        let detected_ip = Self::detect_local_ip()
+            .ok_or_else(|| "Unable to detect non-0.0.0.0 local IP for ICE candidate".to_string())?;
 
         Ok(SocketAddr::new(detected_ip, port))
     }
@@ -111,9 +116,7 @@ impl EventLoop {
 
             if let Err(e) = self
                 .signaling
-                .send(SignalingMessage::Offer {
-                    sdp: sdp_string,
-                })
+                .send(SignalingMessage::Offer { sdp: sdp_string })
                 .await
             {
                 println!("Failed to send SDP offer: {}", e);
@@ -146,133 +149,146 @@ impl EventLoop {
         // The offer would be lost if sent before the remote peer has connected to the room.
         // If NOT initiator: do nothing — we'll receive an offer from the initiator.
         if self.is_initiator {
-            println!("We are the Initiator. Waiting for remote peer to join before sending offer...");
+            println!(
+                "We are the Initiator. Waiting for remote peer to join before sending offer..."
+            );
         } else {
             println!("We are the Responder. Waiting for incoming SDP offer...");
         }
 
         loop {
-            // Poll str0m for its requested output action
-            match self.session.state_machine.rtc.poll_output() {
-                Ok(Output::Transmit(transmit)) => {
-                    // str0m wants to send a UDP packet (STUN, DTLS, SCTP, etc.)
-                    let _ = self
-                        .socket
-                        .send_to(&transmit.contents, transmit.destination)
-                        .await;
-                }
-                Ok(Output::Timeout(target_time)) => {
-                    let timeout =
-                        tokio::time::sleep_until(tokio::time::Instant::from_std(target_time));
+            // Unconditionally drive time forward before polling output to satisfy str0m constraints
+            let now = Instant::now();
+            if let Err(e) = self
+                .session
+                .state_machine
+                .rtc
+                .handle_input(str0m::Input::Timeout(now))
+            {
+                println!("WARNING: str0m handle_input(Timeout) failed: {:?}", e);
+            }
 
-                    tokio::select! {
-                        _ = timeout => {
-                            let _ = self.session.state_machine.rtc.handle_input(
-                                str0m::Input::Timeout(Instant::now())
-                            );
-                        }
-                        result = self.socket.recv_from(&mut buf) => {
-                            if let Ok((n, source)) = result {
-                                if let Ok(recv) = str0m::net::Receive::new(
-                                    str0m::net::Protocol::Udp, source, local_addr, &buf[..n]
-                                ) {
-                                    let _ = self.session.state_machine.rtc.handle_input(
-                                        str0m::Input::Receive(Instant::now(), recv)
-                                    );
+            // Poll str0m for its requested output action until it tells us to wait (Timeout)
+            let target_time = loop {
+                match self.session.state_machine.rtc.poll_output() {
+                    Ok(Output::Transmit(transmit)) => {
+                        let _ = self
+                            .socket
+                            .send_to(&transmit.contents, transmit.destination)
+                            .await;
+                    }
+                    Ok(Output::Timeout(t)) => {
+                        break t;
+                    }
+                    Ok(Output::Event(e)) => {
+                        match e {
+                            str0m::Event::Connected => println!("WebRTC Connected Successfully!"),
+                            str0m::Event::IceConnectionStateChange(state) => {
+                                println!("ICE State: {:?}", state);
+                            }
+                            str0m::Event::MediaAdded(media) => {
+                                println!("Media added: mid={}, kind={:?}", media.mid, media.kind);
+                            }
+                            str0m::Event::ChannelOpen(cid, label) => {
+                                println!("DataChannel opened: id={:?}, label={}", cid, label);
+                                data_channel_id = Some(cid);
+
+                                if let Err(e) = self.app_handle.emit("media_channel_open", ()) {
+                                    println!("Failed to emit media_channel_open event: {}", e);
+                                } else {
+                                    println!("Notified frontend to start MediaRecorder!");
                                 }
                             }
-                        }
-                        Some(webm_chunk) = webm_rx.recv() => {
-                            // Forward WebM chunk from frontend to remote peer via DataChannel
-                            if let Some(cid) = data_channel_id {
-                                if let Some(mut channel) = self.session.state_machine.rtc.channel(cid) {
-                                    match channel.write(true, &webm_chunk) {
-                                        Ok(bytes_written) => println!(">>> Sent WebM chunk to str0m: {} bytes", webm_chunk.len()),
-                                        Err(e) => println!("DataChannel write error: {:?}", e),
+                            str0m::Event::ChannelData(channel_data) => {
+                                let data = channel_data.data;
+                                println!(
+                                    "<<< Received WebM chunk from str0m: {} bytes",
+                                    data.len()
+                                );
+
+                                let channel_state = self.remote_video_channel.lock().await;
+                                if let Some(ref channel) = *channel_state {
+                                    if let Err(e) = channel.send(data) {
+                                        println!(
+                                            "Failed to send remote video to frontend: {:?}",
+                                            e
+                                        );
                                     }
                                 } else {
-                                    println!("WARNING: DataChannel exists but str0m returned None for channel()");
+                                    println!("WARNING: Frontend channel not connected yet, dropping {} bytes!", data.len());
                                 }
-                            } else {
-                                println!("WARNING: Dropping WebM chunk ({} bytes) because DataChannel is not open yet!", webm_chunk.len());
+                            }
+                            str0m::Event::ChannelClose(cid) => {
+                                println!("DataChannel closed: {:?}", cid);
+                                data_channel_id = None;
+                            }
+                            _ => {} // Ignore other events
+                        }
+                    }
+                    Err(e) => {
+                        println!("str0m error: {:?}", e);
+                        return Err(e.to_string());
+                    }
+                }
+            };
+
+            let timeout = tokio::time::sleep_until(tokio::time::Instant::from_std(target_time));
+
+            tokio::select! {
+                _ = timeout => {
+                    // Woke up due to timeout! Loop will automatically call handle_input(Timeout)
+                }
+                result = self.socket.recv_from(&mut buf) => {
+                    if let Ok((n, source)) = result {
+                        if let Ok(recv) = str0m::net::Receive::new(
+                            str0m::net::Protocol::Udp, source, local_addr, &buf[..n]
+                        ) {
+                            let _ = self.session.state_machine.rtc.handle_input(
+                                str0m::Input::Receive(Instant::now(), recv)
+                            );
+                        }
+                    }
+                }
+                Some(webm_chunk) = webm_rx.recv() => {
+                    if let Some(cid) = data_channel_id {
+                        if let Some(mut channel) = self.session.state_machine.rtc.channel(cid) {
+                            match channel.write(true, &webm_chunk) {
+                                Ok(_bytes_written) => println!(">>> Sent WebM chunk to str0m: {} bytes", webm_chunk.len()),
+                                Err(e) => println!("DataChannel write error: {:?}", e),
+                            }
+                        } else {
+                            println!("WARNING: DataChannel exists but str0m returned None for channel()");
+                        }
+                    } else {
+                        println!("WARNING: Dropping WebM chunk ({} bytes) because DataChannel is not open yet!", webm_chunk.len());
+                    }
+                }
+                Some(signaling_msg) = self.signaling.recv() => {
+                    match &signaling_msg {
+                        SignalingMessage::PeerJoined => {
+                            if self.is_initiator {
+                                println!("Remote peer joined. Generating and sending SDP offer...");
+                                self.send_offer().await;
                             }
                         }
-                        Some(signaling_msg) = self.signaling.recv() => {
-                            match &signaling_msg {
-                                SignalingMessage::PeerJoined => {
-                                    // Remote peer has joined! If we're the initiator, NOW send the offer.
-                                    if self.is_initiator {
-                                        println!("Remote peer joined. Generating and sending SDP offer...");
-                                        self.send_offer().await;
+                        _ => {
+                            match self.session.handle_signaling(signaling_msg) {
+                                Ok(Some(answer)) => {
+                                    let sdp_string = answer.to_sdp_string();
+                                    println!("SDP Answer generated ({} bytes)", sdp_string.len());
+                                    if let Err(e) = self.signaling.send(SignalingMessage::Answer {
+                                        sdp: sdp_string,
+                                    }).await {
+                                        println!("Failed to send SDP answer: {}", e);
                                     }
                                 }
-                                _ => {
-                                    // Delegate offer/answer/ICE to HybridSession
-                                    match self.session.handle_signaling(signaling_msg) {
-                                        Ok(Some(answer)) => {
-                                            // We received an offer and produced an answer — send it back
-                                            let sdp_string = answer.to_sdp_string();
-                                            println!("SDP Answer generated ({} bytes)", sdp_string.len());
-                                            if let Err(e) = self.signaling.send(SignalingMessage::Answer {
-                                                sdp: sdp_string,
-                                            }).await {
-                                                println!("Failed to send SDP answer: {}", e);
-                                            }
-                                        }
-                                        Ok(None) => {}
-                                        Err(e) => {
-                                            println!("Signaling error: {}", e);
-                                        }
-                                    }
+                                Ok(None) => {}
+                                Err(e) => {
+                                    println!("Signaling error: {}", e);
                                 }
                             }
                         }
                     }
-                }
-                Ok(Output::Event(e)) => {
-                    match e {
-                        str0m::Event::Connected => println!("WebRTC Connected Successfully!"),
-                        str0m::Event::IceConnectionStateChange(state) => {
-                            println!("ICE State: {:?}", state);
-                        }
-                        str0m::Event::MediaAdded(media) => {
-                            println!("Media added: mid={}, kind={:?}", media.mid, media.kind);
-                        }
-                        str0m::Event::ChannelOpen(cid, label) => {
-                            println!("DataChannel opened: id={:?}, label={}", cid, label);
-                            data_channel_id = Some(cid);
-                            
-                            // Notify the Svelte frontend that it's safe to start MediaRecorder
-                            if let Err(e) = self.app_handle.emit("media_channel_open", ()) {
-                                println!("Failed to emit media_channel_open event: {}", e);
-                            } else {
-                                println!("Notified frontend to start MediaRecorder!");
-                            }
-                        }
-                        str0m::Event::ChannelData(channel_data) => {
-                            // Received WebM chunk from remote peer — forward to frontend
-                            let data = channel_data.data;
-                            println!("<<< Received WebM chunk from str0m: {} bytes", data.len());
-                            
-                            let channel_state = self.remote_video_channel.lock().await;
-                            if let Some(ref channel) = *channel_state {
-                                if let Err(e) = channel.send(data) {
-                                    println!("Failed to send remote video to frontend: {:?}", e);
-                                }
-                            } else {
-                                println!("WARNING: Frontend channel not connected yet, dropping {} bytes!", data.len());
-                            }
-                        }
-                        str0m::Event::ChannelClose(cid) => {
-                            println!("DataChannel closed: {:?}", cid);
-                            data_channel_id = None;
-                        }
-                        _ => println!("str0m Event: {:?}", e),
-                    }
-                }
-                Err(e) => {
-                    println!("str0m shutdown or error: {:?}", e);
-                    break;
                 }
             }
         }
