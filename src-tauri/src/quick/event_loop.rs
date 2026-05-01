@@ -6,6 +6,7 @@ use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::time::Instant;
 use str0m::channel::ChannelId;
 use str0m::{Candidate, Output};
+use tauri::Emitter;
 
 /// Reactor handles the 'quick' tier's async execution loop.
 /// It multiplexes UDP socket reads, WebRTC state timeout events, and incoming signaling via WebSockets
@@ -16,6 +17,7 @@ pub struct EventLoop {
     pub signaling: SignalingClient,
     pub is_initiator: bool,
     pub remote_video_channel: RemoteVideoChannel,
+    pub app_handle: tauri::AppHandle,
 }
 
 impl EventLoop {
@@ -24,6 +26,7 @@ impl EventLoop {
         signaling: SignalingClient,
         is_initiator: bool,
         remote_video_channel: RemoteVideoChannel,
+        app_handle: tauri::AppHandle,
     ) -> Self {
         // Bind to any available local UDP port
         let socket = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
@@ -36,6 +39,7 @@ impl EventLoop {
             socket,
             is_initiator,
             remote_video_channel,
+            app_handle,
         }
     }
 
@@ -182,10 +186,15 @@ impl EventLoop {
                             // Forward WebM chunk from frontend to remote peer via DataChannel
                             if let Some(cid) = data_channel_id {
                                 if let Some(mut channel) = self.session.state_machine.rtc.channel(cid) {
-                                    if let Err(e) = channel.write(true, &webm_chunk) {
-                                        println!("DataChannel write error: {:?}", e);
+                                    match channel.write(true, &webm_chunk) {
+                                        Ok(bytes_written) => println!(">>> Sent WebM chunk to str0m: {} bytes", webm_chunk.len()),
+                                        Err(e) => println!("DataChannel write error: {:?}", e),
                                     }
+                                } else {
+                                    println!("WARNING: DataChannel exists but str0m returned None for channel()");
                                 }
+                            } else {
+                                println!("WARNING: Dropping WebM chunk ({} bytes) because DataChannel is not open yet!", webm_chunk.len());
                             }
                         }
                         Some(signaling_msg) = self.signaling.recv() => {
@@ -232,15 +241,26 @@ impl EventLoop {
                         str0m::Event::ChannelOpen(cid, label) => {
                             println!("DataChannel opened: id={:?}, label={}", cid, label);
                             data_channel_id = Some(cid);
+                            
+                            // Notify the Svelte frontend that it's safe to start MediaRecorder
+                            if let Err(e) = self.app_handle.emit("media_channel_open", ()) {
+                                println!("Failed to emit media_channel_open event: {}", e);
+                            } else {
+                                println!("Notified frontend to start MediaRecorder!");
+                            }
                         }
                         str0m::Event::ChannelData(channel_data) => {
                             // Received WebM chunk from remote peer — forward to frontend
                             let data = channel_data.data;
+                            println!("<<< Received WebM chunk from str0m: {} bytes", data.len());
+                            
                             let channel_state = self.remote_video_channel.lock().await;
                             if let Some(ref channel) = *channel_state {
                                 if let Err(e) = channel.send(data) {
                                     println!("Failed to send remote video to frontend: {:?}", e);
                                 }
+                            } else {
+                                println!("WARNING: Frontend channel not connected yet, dropping {} bytes!", data.len());
                             }
                         }
                         str0m::Event::ChannelClose(cid) => {

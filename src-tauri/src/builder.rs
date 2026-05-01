@@ -93,6 +93,7 @@ pub async fn abort_rtc(task: tauri::State<'_, RtcTask>) -> Result<(), String> {
 pub async fn start_rtc(
     room: String,
     sig_url: String,
+    app_handle: tauri::AppHandle,
     webm_rx: tauri::State<'_, tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>>>>,
     task: tauri::State<'_, RtcTask>,
     remote_video: tauri::State<'_, crate::media::ipc::RemoteVideoChannel>,
@@ -118,6 +119,7 @@ pub async fn start_rtc(
         session.signaling,
         session.is_initiator,
         remote_channel,
+        app_handle,
     );
     let handle = tokio::spawn(async move {
         let _ = reactor.run(rx).await;

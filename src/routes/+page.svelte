@@ -161,7 +161,10 @@
       }
       
       // 2. Setup WebM MediaRecorder to emit chunks
+      const targetMime = 'video/webm; codecs="vp8, opus"';
       const mimeTypes = [
+        targetMime,
+        'video/webm; codecs="vp8"',
         'video/webm;codecs=vp8,opus',
         'video/webm;codecs=vp8,vorbis',
         'video/webm;codecs=vp8',
@@ -194,14 +197,23 @@
         remoteVideoRef.src = URL.createObjectURL(mediaSource);
       }
       mediaSource.onsourceopen = () => {
-        sourceBuffer = mediaSource!.addSourceBuffer(supportedMime || 'video/webm; codecs="vp8"');
+        try {
+          sourceBuffer = mediaSource!.addSourceBuffer(targetMime);
+        } catch (e) {
+          log(`[ERR] MediaSource error: ${e}. Fallback to vp8 only.`);
+          sourceBuffer = mediaSource!.addSourceBuffer('video/webm; codecs="vp8"');
+        }
       };
       
       // 4. Listen for incoming remote video WebM chunks from Rust
       const onRemoteChunk = new Channel<number[]>();
       onRemoteChunk.onmessage = (message) => {
         if (sourceBuffer && !sourceBuffer.updating) {
-          sourceBuffer.appendBuffer(new Uint8Array(message));
+          try {
+            sourceBuffer.appendBuffer(new Uint8Array(message));
+          } catch (e) {
+            log(`[ERR] SourceBuffer append error: ${e}`);
+          }
         }
       };
       await invoke('subscribe_video', { onChunk: onRemoteChunk });
@@ -209,20 +221,23 @@
       // Actually invoke Rust WebRTC Start Command
       await invoke('start_rtc', { room: roomId, sigUrl: sigServer });
       
-      setTimeout(() => {
-        connectionState = 'CONNECTED';
-        try {
-          mediaRecorder?.start(100); // 100ms chunks
-        } catch (startErr) {
-          log(`[ERR] Failed to start MediaRecorder: ${startErr}`);
-        }
-        log('[OK] WebRTC DataChannel established via str0m.');
-        log('[OK] Emitting WebM chunks over encrypted DTLS/SCTP tunnel.');
-        
-        if (remoteVideoRef && localStream) {
-          setupVisualizers(localStream, remoteVideoRef);
-        }
-      }, 3000);
+      // Wait for Rust to notify us that the DataChannel is open
+      import('@tauri-apps/api/event').then(({ listen }) => {
+        listen('media_channel_open', () => {
+          connectionState = 'CONNECTED';
+          try {
+            mediaRecorder?.start(100); // 100ms chunks
+            log('[OK] WebRTC DataChannel established via str0m.');
+            log('[OK] Emitting WebM chunks over encrypted DTLS/SCTP tunnel.');
+            
+            if (remoteVideoRef && localStream) {
+              setupVisualizers(localStream, remoteVideoRef);
+            }
+          } catch (startErr) {
+            log(`[ERR] Failed to start MediaRecorder: ${startErr}`);
+          }
+        });
+      });
     } catch (e) {
       log(`[ERR] ${e}`);
       connectionState = 'DISCONNECTED';
