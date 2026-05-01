@@ -33,3 +33,6 @@ default = ["quick", "hybrid", "core"]
 core = []
 hybrid = ["core"]
 quick = ["hybrid", "tokio", "tokio-tungstenite"]
+
+[target."cfg(any(target_os = \"linux\", target_os = \"dragonfly\", target_os = \"freebsd\", target_os = \"openbsd\", target_os = \"netbsd\"))".dependencies]
+webkit2gtk = { version = "2.0.2", features = ["v2_40"] }

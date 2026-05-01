@@ -31,15 +31,42 @@ pub fn run() {
     media::demuxer::start_demuxer_thread(webm_rx, vp8_tx);
 
     let vp8_rx_state = tokio::sync::Mutex::new(Some(vp8_rx));
+    let rtc_task_state = builder::RtcTask(tokio::sync::Mutex::new(None));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(webm_tx)
         .manage(vp8_rx_state)
+        .manage(rtc_task_state)
+        .setup(|app| {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "dragonfly",
+                target_os = "freebsd",
+                target_os = "netbsd",
+                target_os = "openbsd"
+            ))]
+            {
+                use tauri::Manager;
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.with_webview(|webview| {
+                        use webkit2gtk::{WebViewExt, PermissionRequestExt};
+                        let inner = webview.inner();
+                        inner.connect_permission_request(|_, request| {
+                            println!("WebKitGTK: Auto-granting permission request");
+                            request.allow();
+                            true
+                        });
+                    });
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             greet,
             media::ipc::send_video_chunk,
             builder::start_rtc,
+            builder::abort_rtc,
             media::ipc::subscribe_video
         ])
         .run(tauri::generate_context!())

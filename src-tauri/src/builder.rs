@@ -78,11 +78,23 @@ impl RamsBuilder {
     }
 }
 
+pub struct RtcTask(pub tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>);
+
+#[tauri::command]
+pub async fn abort_rtc(task: tauri::State<'_, RtcTask>) -> Result<(), String> {
+    println!("Aborting RTC Uplink...");
+    if let Some(handle) = task.0.lock().await.take() {
+        handle.abort();
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn start_rtc(
     room: String,
     sig_url: String,
     vp8_rx: tauri::State<'_, tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<crate::media::demuxer::Vp8Packet>>>>,
+    task: tauri::State<'_, RtcTask>,
 ) -> Result<(), String> {
     println!("Starting RTC in room {}", room);
     let builder = RamsBuilder::new().with_signaling(sig_url);
@@ -100,9 +112,11 @@ pub async fn start_rtc(
         session.signaling,
         session.is_initiator,
     );
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         let _ = reactor.run(rx).await;
     });
+
+    *task.0.lock().await = Some(handle);
 
     Ok(())
 }

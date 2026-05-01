@@ -3175,6 +3175,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tokio",
  "tokio-tungstenite",
+ "webkit2gtk",
  "webrtc-media",
 ]
 

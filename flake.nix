@@ -26,6 +26,13 @@
           dbus
           librsvg
           openssl # Use one consistent version
+          
+          # GStreamer for WebKitGTK media (video/audio capture and playback)
+          gst_all_1.gstreamer
+          gst_all_1.gst-plugins-base
+          gst_all_1.gst-plugins-good
+          gst_all_1.gst-plugins-bad
+          gst_all_1.gst-plugins-ugly
         ];
 
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
@@ -52,6 +59,10 @@
             export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath libraries}:$LD_LIBRARY_PATH"
             export XDG_DATA_DIRS="$GSETTINGS_SCHEMAS_PATH"
             export JAVA_HOME="${pkgs.zulu.home}"
+            
+            # Allow GStreamer to find plugins for media processing
+            export GST_PLUGIN_SYSTEM_PATH_1_0="${pkgs.lib.makeSearchPathOutput "lib" "lib/gstreamer-1.0" (with pkgs.gst_all_1; [ gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly ])}"
+            
             echo "RAMS Dev Environment: Git + Rust + Tauri Loaded"
           '';
         };
