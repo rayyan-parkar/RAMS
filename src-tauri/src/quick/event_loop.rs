@@ -2,6 +2,7 @@ use crate::hybrid::session::HybridSession;
 use crate::media::ipc::RemoteVideoChannel;
 use crate::signaling::client::SignalingClient;
 use crate::signaling::protocol::SignalingMessage;
+use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::time::Instant;
 use str0m::channel::ChannelId;
 use str0m::{Candidate, Output};
@@ -41,13 +42,45 @@ impl EventLoop {
     /// Helper: register the UDP socket as a local ICE candidate with str0m.
     /// Without this, str0m has no candidates in its SDP and ICE can never connect.
     fn register_local_candidate(&mut self) {
-        let local_addr = self.socket.local_addr().unwrap();
+        let local_addr = match self.resolve_local_candidate_addr() {
+            Ok(addr) => addr,
+            Err(e) => {
+                println!("WARNING: Failed to resolve local ICE address: {}", e);
+                self.socket.local_addr().unwrap()
+            }
+        };
         // str0m needs to know about our local socket so it can include it as an ICE candidate
         if let Ok(candidate) = Candidate::host(local_addr, "udp") {
             self.session.state_machine.rtc.add_local_candidate(candidate);
             println!("Registered local ICE candidate: {}", local_addr);
         } else {
             println!("WARNING: Failed to create host candidate from {}", local_addr);
+        }
+    }
+
+    fn resolve_local_candidate_addr(&self) -> Result<SocketAddr, String> {
+        let bound = self.socket.local_addr().map_err(|e| e.to_string())?;
+        let port = bound.port();
+
+        if !bound.ip().is_unspecified() {
+            return Ok(bound);
+        }
+
+        let detected_ip = Self::detect_local_ip().ok_or_else(|| {
+            "Unable to detect non-0.0.0.0 local IP for ICE candidate".to_string()
+        })?;
+
+        Ok(SocketAddr::new(detected_ip, port))
+    }
+
+    fn detect_local_ip() -> Option<IpAddr> {
+        let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+        let _ = socket.connect("1.1.1.1:80");
+        let local = socket.local_addr().ok()?;
+        if local.ip().is_unspecified() {
+            None
+        } else {
+            Some(local.ip())
         }
     }
 
@@ -98,7 +131,9 @@ impl EventLoop {
         // Without this, the SDP offer/answer will have no candidates and ICE connectivity fails.
         self.register_local_candidate();
 
-        let local_addr = self.socket.local_addr().map_err(|e| e.to_string())?;
+        let local_addr = self
+            .resolve_local_candidate_addr()
+            .unwrap_or_else(|_| self.socket.local_addr().unwrap());
 
         // Track the data channel ID once it's open
         let mut data_channel_id: Option<ChannelId> = None;

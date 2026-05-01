@@ -99,12 +99,15 @@ pub async fn start_rtc(
 ) -> Result<(), String> {
     println!("Starting RTC in room {}", room);
     let builder = RamsBuilder::new().with_signaling(sig_url);
+    let enable_audio = builder.audio;
+    let enable_video = builder.video;
 
     // Connect to signaling and join the room
     let session = builder.join_room(&room).await?;
 
     // Create the hybrid session with a fresh str0m state machine
-    let hybrid = HybridSession::new().map_err(|e| e.to_string())?;
+    let mut hybrid = HybridSession::new().map_err(|e| e.to_string())?;
+    hybrid.add_media_tracks(enable_audio, enable_video);
 
     let rx = webm_rx.lock().await.take().ok_or("RTC already streaming!")?;
 
