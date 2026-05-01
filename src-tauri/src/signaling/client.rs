@@ -38,9 +38,15 @@ impl SignalingClient {
         tokio::spawn(async move {
             while let Some(Ok(msg)) = read.next().await {
                 if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
-                    if let Ok(signaling_msg) = serde_json::from_str::<SignalingMessage>(&text) {
-                        if tx_rx.send(signaling_msg).await.is_err() {
-                            break; // Receiver was dropped
+                    println!("[Signaling RX Raw] {}", text);
+                    match serde_json::from_str::<SignalingMessage>(&text) {
+                        Ok(signaling_msg) => {
+                            if tx_rx.send(signaling_msg).await.is_err() {
+                                break; // Receiver was dropped
+                            }
+                        }
+                        Err(e) => {
+                            println!("[Signaling RX Error] Failed to parse JSON: {} | Data: {}", e, text);
                         }
                     }
                 }

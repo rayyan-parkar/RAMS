@@ -7,7 +7,11 @@ pub enum SignalingMessage {
     /// Request to join a specific room
     Join { room: String },
     /// Notification that the room was successfully joined
-    Joined { room: String, is_initiator: bool },
+    Joined {
+        room: String,
+        #[serde(rename = "isInitiator")]
+        is_initiator: bool,
+    },
     /// Notification that another peer has joined the room
     PeerJoined,
     /// SDP Offer
