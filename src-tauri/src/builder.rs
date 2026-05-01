@@ -93,8 +93,9 @@ pub async fn abort_rtc(task: tauri::State<'_, RtcTask>) -> Result<(), String> {
 pub async fn start_rtc(
     room: String,
     sig_url: String,
-    vp8_rx: tauri::State<'_, tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<crate::media::demuxer::Vp8Packet>>>>,
+    webm_rx: tauri::State<'_, tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>>>>,
     task: tauri::State<'_, RtcTask>,
+    remote_video: tauri::State<'_, crate::media::ipc::RemoteVideoChannel>,
 ) -> Result<(), String> {
     println!("Starting RTC in room {}", room);
     let builder = RamsBuilder::new().with_signaling(sig_url);
@@ -105,12 +106,15 @@ pub async fn start_rtc(
     // Create the hybrid session with a fresh str0m state machine
     let hybrid = HybridSession::new().map_err(|e| e.to_string())?;
 
-    let rx = vp8_rx.lock().await.take().ok_or("RTC already streaming!")?;
+    let rx = webm_rx.lock().await.take().ok_or("RTC already streaming!")?;
+
+    let remote_channel = remote_video.inner().clone();
 
     let reactor = crate::quick::event_loop::EventLoop::new(
         hybrid,
         session.signaling,
         session.is_initiator,
+        remote_channel,
     );
     let handle = tokio::spawn(async move {
         let _ = reactor.run(rx).await;

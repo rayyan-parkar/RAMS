@@ -23,21 +23,20 @@ fn greet(name: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // WebM chunks from the frontend go directly to the event loop (no demuxer needed for DataChannel approach)
     let (webm_tx, webm_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-    let (vp8_tx, vp8_rx) = tokio::sync::mpsc::unbounded_channel();
-    
-    // Start background background demuxer automatically
-    // It blocks waiting for bytes from the frontend
-    media::demuxer::start_demuxer_thread(webm_rx, vp8_tx);
 
-    let vp8_rx_state = tokio::sync::Mutex::new(Some(vp8_rx));
+    let webm_rx_state = tokio::sync::Mutex::new(Some(webm_rx));
     let rtc_task_state = builder::RtcTask(tokio::sync::Mutex::new(None));
+    let remote_video_channel: media::ipc::RemoteVideoChannel =
+        std::sync::Arc::new(tokio::sync::Mutex::new(None));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(webm_tx)
-        .manage(vp8_rx_state)
+        .manage(webm_rx_state)
         .manage(rtc_task_state)
+        .manage(remote_video_channel)
         .setup(|app| {
             #[cfg(any(
                 target_os = "linux",

@@ -216,13 +216,13 @@
         } catch (startErr) {
           log(`[ERR] Failed to start MediaRecorder: ${startErr}`);
         }
-        log('[OK] ICE Gathering Complete.');
-        log('[OK] WebRTC P2P Channel LIVE. Emitting video frames.');
+        log('[OK] WebRTC DataChannel established via str0m.');
+        log('[OK] Emitting WebM chunks over encrypted DTLS/SCTP tunnel.');
         
         if (remoteVideoRef && localStream) {
           setupVisualizers(localStream, remoteVideoRef);
         }
-      }, 1500);
+      }, 3000);
     } catch (e) {
       log(`[ERR] ${e}`);
       connectionState = 'DISCONNECTED';

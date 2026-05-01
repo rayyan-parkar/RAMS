@@ -1,7 +1,9 @@
 use crate::hybrid::session::HybridSession;
+use crate::media::ipc::RemoteVideoChannel;
 use crate::signaling::client::SignalingClient;
 use crate::signaling::protocol::SignalingMessage;
 use std::time::Instant;
+use str0m::channel::ChannelId;
 use str0m::{Candidate, Output};
 
 /// Reactor handles the 'quick' tier's async execution loop.
@@ -12,10 +14,16 @@ pub struct EventLoop {
     pub socket: tokio::net::UdpSocket,
     pub signaling: SignalingClient,
     pub is_initiator: bool,
+    pub remote_video_channel: RemoteVideoChannel,
 }
 
 impl EventLoop {
-    pub fn new(session: HybridSession, signaling: SignalingClient, is_initiator: bool) -> Self {
+    pub fn new(
+        session: HybridSession,
+        signaling: SignalingClient,
+        is_initiator: bool,
+        remote_video_channel: RemoteVideoChannel,
+    ) -> Self {
         // Bind to any available local UDP port
         let socket = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
         socket.set_nonblocking(true).unwrap();
@@ -26,6 +34,7 @@ impl EventLoop {
             session,
             socket,
             is_initiator,
+            remote_video_channel,
         }
     }
 
@@ -42,23 +51,34 @@ impl EventLoop {
         }
     }
 
-    /// Helper: generate an SDP offer, store the pending state, and send it via signaling.
+    /// Helper: generate an SDP offer with a data channel for media transport,
+    /// store the pending state, and send it via signaling.
     async fn send_offer(&mut self) {
-        let mut change = self.session.state_machine.rtc.sdp_api();
-        change.add_media(
-            str0m::media::MediaKind::Video,
-            str0m::media::Direction::SendRecv,
-            None, None, None,
-        );
+        // Create a data channel BEFORE generating the SDP offer so it's included in the offer.
+        // str0m will include an m=application line in the SDP for SCTP/DataChannel support.
+        self.session
+            .state_machine
+            .rtc
+            .direct_api()
+            .create_data_channel(str0m::channel::ChannelConfig {
+                label: "media".to_string(),
+                ..Default::default()
+            });
+
+        let change = self.session.state_machine.rtc.sdp_api();
 
         if let Some((offer, pending)) = change.apply() {
             self.session.pending_offer = Some(pending);
             let sdp_string = offer.to_sdp_string();
             println!("SDP Offer generated ({} bytes)", sdp_string.len());
 
-            if let Err(e) = self.signaling.send(SignalingMessage::Offer {
-                sdp: sdp_string,
-            }).await {
+            if let Err(e) = self
+                .signaling
+                .send(SignalingMessage::Offer {
+                    sdp: sdp_string,
+                })
+                .await
+            {
                 println!("Failed to send SDP offer: {}", e);
             }
         } else {
@@ -66,8 +86,12 @@ impl EventLoop {
         }
     }
 
-    /// Starts the async event loop to poll str0m, dispatch UDP packets, route events, and feed VP8 frames.
-    pub async fn run(mut self, mut vp8_rx: tokio::sync::mpsc::UnboundedReceiver<crate::media::demuxer::Vp8Packet>) -> Result<(), String> {
+    /// Starts the async event loop to poll str0m, dispatch UDP packets, route events,
+    /// and forward media chunks between the frontend and the remote peer via DataChannel.
+    pub async fn run(
+        mut self,
+        mut webm_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    ) -> Result<(), String> {
         let mut buf = vec![0u8; 2000];
 
         // CRITICAL: Register local UDP socket as an ICE candidate BEFORE generating any SDP.
@@ -75,6 +99,9 @@ impl EventLoop {
         self.register_local_candidate();
 
         let local_addr = self.socket.local_addr().map_err(|e| e.to_string())?;
+
+        // Track the data channel ID once it's open
+        let mut data_channel_id: Option<ChannelId> = None;
 
         // If initiator: DON'T send the offer yet. Wait for PeerJoined first.
         // The offer would be lost if sent before the remote peer has connected to the room.
@@ -89,14 +116,15 @@ impl EventLoop {
             // Poll str0m for its requested output action
             match self.session.state_machine.rtc.poll_output() {
                 Ok(Output::Transmit(transmit)) => {
-                    // str0m wants to send a UDP packet (STUN, SRTP, etc.)
+                    // str0m wants to send a UDP packet (STUN, DTLS, SCTP, etc.)
                     let _ = self
                         .socket
                         .send_to(&transmit.contents, transmit.destination)
                         .await;
                 }
                 Ok(Output::Timeout(target_time)) => {
-                    let timeout = tokio::time::sleep_until(tokio::time::Instant::from_std(target_time));
+                    let timeout =
+                        tokio::time::sleep_until(tokio::time::Instant::from_std(target_time));
 
                     tokio::select! {
                         _ = timeout => {
@@ -115,8 +143,15 @@ impl EventLoop {
                                 }
                             }
                         }
-                        Some(vp8) = vp8_rx.recv() => {
-                            println!("VP8 Frame Size {} loaded", vp8.data.len());
+                        Some(webm_chunk) = webm_rx.recv() => {
+                            // Forward WebM chunk from frontend to remote peer via DataChannel
+                            if let Some(cid) = data_channel_id {
+                                if let Some(mut channel) = self.session.state_machine.rtc.channel(cid) {
+                                    if let Err(e) = channel.write(true, &webm_chunk) {
+                                        println!("DataChannel write error: {:?}", e);
+                                    }
+                                }
+                            }
                         }
                         Some(signaling_msg) = self.signaling.recv() => {
                             match &signaling_msg {
@@ -158,6 +193,24 @@ impl EventLoop {
                         }
                         str0m::Event::MediaAdded(media) => {
                             println!("Media added: mid={}, kind={:?}", media.mid, media.kind);
+                        }
+                        str0m::Event::ChannelOpen(cid, label) => {
+                            println!("DataChannel opened: id={:?}, label={}", cid, label);
+                            data_channel_id = Some(cid);
+                        }
+                        str0m::Event::ChannelData(channel_data) => {
+                            // Received WebM chunk from remote peer — forward to frontend
+                            let data = channel_data.data;
+                            let channel_state = self.remote_video_channel.lock().await;
+                            if let Some(ref channel) = *channel_state {
+                                if let Err(e) = channel.send(data) {
+                                    println!("Failed to send remote video to frontend: {:?}", e);
+                                }
+                            }
+                        }
+                        str0m::Event::ChannelClose(cid) => {
+                            println!("DataChannel closed: {:?}", cid);
+                            data_channel_id = None;
                         }
                         _ => println!("str0m Event: {:?}", e),
                     }
