@@ -3,9 +3,6 @@ pub mod builder;
 #[cfg(feature = "core")]
 pub mod core;
 
-#[cfg(feature = "hybrid")]
-pub mod hybrid;
-
 #[cfg(feature = "quick")]
 pub mod media;
 
