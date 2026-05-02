@@ -23,20 +23,8 @@ fn greet(name: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // WebM chunks from the frontend go directly to the event loop (no demuxer needed for DataChannel approach)
-    let (webm_tx, webm_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-
-    let webm_rx_state = tokio::sync::Mutex::new(Some(webm_rx));
-    let rtc_task_state = builder::RtcTask(tokio::sync::Mutex::new(None));
-    let remote_video_channel: media::ipc::RemoteVideoChannel =
-        std::sync::Arc::new(tokio::sync::Mutex::new(None));
-
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(webm_tx)
-        .manage(webm_rx_state)
-        .manage(rtc_task_state)
-        .manage(remote_video_channel)
         .setup(|app| {
             #[cfg(any(
                 target_os = "linux",
@@ -63,10 +51,6 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             greet,
-            media::ipc::send_video_chunk,
-            builder::start_rtc,
-            builder::abort_rtc,
-            media::ipc::subscribe_video
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
