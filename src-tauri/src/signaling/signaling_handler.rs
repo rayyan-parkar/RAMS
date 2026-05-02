@@ -19,6 +19,7 @@ pub enum SignalingState {
     
     /// SDP handshake complete, now exchanging ICE Candidates
     TricklingIce,
+    
     /// ICE candidates exchanged and a connection has been established
     Stable,
 
