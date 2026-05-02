@@ -48,8 +48,8 @@ async fn start_quick_call(
                         QuickEvent::IceState(state) => {
                             let _ = app_handle.emit("webrtc-ice-state", state);
                         }
-                        QuickEvent::MediaData(mid, len) => {
-                            let _ = app_handle.emit("webrtc-media-data", (mid, len));
+                        QuickEvent::MediaData(mid, data) => {
+                            let _ = app_handle.emit("webrtc-media-data", (mid, data));
                         }
                     }
                 }
@@ -71,6 +71,21 @@ async fn close_call(state: State<'_, AppState>) -> Result<(), String> {
     } else {
         Err("No active connection to close.".to_string())
     }
+}
+
+#[tauri::command]
+async fn send_video_chunk(
+    data: Vec<u8>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut conn_guard = state.connection.lock().await;
+    if let Some(conn) = conn_guard.as_mut() {
+        let mut core = conn.core.lock().await;
+        if let Some(mid) = core.video_mid {
+            core.write_media(mid, data)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -108,6 +123,7 @@ pub fn run() {
             greet,
             start_quick_call,
             close_call,
+            send_video_chunk,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

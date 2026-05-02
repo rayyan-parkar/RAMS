@@ -176,8 +176,23 @@
       
       if (supportedMime) {
         log(`[SYS] Using MediaRecorder codec: ${supportedMime}`);
-        // mediaRecorder = new MediaRecorder(stream, { mimeType: supportedMime });
-        // mediaRecorder.ondataavailable = async (e) => { ... };
+        mediaRecorder = new MediaRecorder(stream, { 
+          mimeType: supportedMime,
+          videoBitsPerSecond: 1000000 // 1Mbps
+        });
+        
+        mediaRecorder.ondataavailable = async (e) => {
+          if (e.data.size > 0 && connectionState === 'CONNECTED') {
+            try {
+              const buffer = await e.data.arrayBuffer();
+              const uint8 = new Uint8Array(buffer);
+              // Send chunk to Rust
+              await invoke('send_video_chunk', { data: Array.from(uint8) });
+            } catch (err) {
+              // Silently fail on small chunk errors to avoid log spam
+            }
+          }
+        };
       } else {
         log('[WARN] No supported MediaRecorder codec found.');
       }
@@ -214,7 +229,7 @@
           connectionState = 'CONNECTED';
           log(`[RUST] Connected: ${event.payload}`);
           try {
-            // mediaRecorder?.start(100); // We'll handle sending media separately soon
+            mediaRecorder?.start(100); // Send chunks every 100ms
             log('[OK] WebRTC session established in Rust core.');
             
             if (remoteVideoRef && localStream) {
@@ -229,13 +244,44 @@
           log(`[ICE] State: ${event.payload}`);
         });
 
+        const remoteQueue: Uint8Array[] = [];
+        let isProcessingQueue = false;
+
+        const processQueue = async () => {
+          if (isProcessingQueue || !sourceBuffer || sourceBuffer.updating || remoteQueue.length === 0) return;
+          
+          isProcessingQueue = true;
+          try {
+            const chunk = remoteQueue.shift();
+            if (chunk) {
+              sourceBuffer.appendBuffer(chunk);
+            }
+          } catch (err) {
+            log(`[ERR] SourceBuffer append failed: ${err}`);
+          } finally {
+            isProcessingQueue = false;
+          }
+        };
+
         listen('webrtc-media-data', (event) => {
-          const [mid, len] = event.payload as [string, number];
-          // Intensive logging for media data
-          if (Math.random() < 0.01) { // Log 1% of packets to avoid flooding too much but still see it's working
-             log(`[MEDIA] Incoming RTP for MID ${mid}, size: ${len} bytes`);
+          const [mid, data] = event.payload as [string, number[]];
+          const uint8 = new Uint8Array(data);
+          
+          remoteQueue.push(uint8);
+          processQueue();
+
+          // Occasionally log to show data is flowing
+          if (Math.random() < 0.05) {
+             log(`[MEDIA] Incoming RTP: ${uint8.length} bytes`);
           }
         });
+
+        // Ensure we keep processing when the buffer is ready
+        setInterval(() => {
+          if (sourceBuffer && !sourceBuffer.updating && remoteQueue.length > 0) {
+            processQueue();
+          }
+        }, 50);
       });
     } catch (e) {
       log(`[ERR] ${e}`);

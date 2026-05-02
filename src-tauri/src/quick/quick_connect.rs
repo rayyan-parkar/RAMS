@@ -18,14 +18,14 @@ pub enum QuickEvent {
     Connecting(String),
     Connected,
     IceState(String),
-    MediaData(str0m::media::Mid, usize),
+    MediaData(str0m::media::Mid, Vec<u8>),
 }
 
 /// Handle to a running quick connection.
 pub struct QuickConnection {
-    core: std::sync::Arc<Mutex<RAMSCore>>,
-    shutdown: Option<oneshot::Sender<()>>,
-    task: tokio::task::JoinHandle<()>,
+    pub core: std::sync::Arc<Mutex<RAMSCore>>,
+    pub(crate) shutdown: Option<oneshot::Sender<()>>,
+    pub(crate) task: tokio::task::JoinHandle<()>,
 }
 
 impl QuickConnection {
@@ -376,8 +376,8 @@ async fn flush_core_outputs_to_network(
                         let _ = event_tx.send(QuickEvent::IceState(format!("{:?}", state)));
                     }
                     str0m::Event::MediaData(data) => {
-                        // Route incoming str0m MediaData events
-                        let _ = event_tx.send(QuickEvent::MediaData(data.mid, data.data.len()));
+                        // Route incoming str0m MediaData events with raw bytes
+                        let _ = event_tx.send(QuickEvent::MediaData(data.mid, data.data.clone()));
                     }
                     _ => {
                         // println!("Quick: Other str0m Event: {:?}", event);

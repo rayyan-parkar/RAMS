@@ -3,27 +3,29 @@ use str0m::RtcError;
 use str0m::change::{SdpAnswer, SdpOffer, SdpPendingOffer};
 use str0m::media::{Direction, MediaKind};
 use crate::signaling::{SignalingHandler, SignalingMessage, SignalingRole, SignalingState};
+use str0m::media::{Mid};
 
 /// A superset of str0m that implements a signaling state machine.
-/// rtc : a new str0m Rtc object
-/// signaling_handler: A signaling state machine
-/// pending_remote_candidates: A queue of remote candidates that have been received but not yet applied
-/// pending_offer: A pending offer that has not yet been applied
 pub struct RAMSCore {
     pub rtc: str0m::Rtc,
     pub signaling_handler: SignalingHandler,
     pub pending_remote_candidates: Vec<str0m::Candidate>,
     pub pending_offer: Option<SdpPendingOffer>,
+    pub start_time: Instant,
+    pub video_mid: Option<Mid>,
 }
 
 impl RAMSCore {
     /// Creates a new low-level RAMSCore object
     pub fn new(role: SignalingRole) -> Self {
+        let now = Instant::now();
         Self {
-            rtc: str0m::Rtc::new(Instant::now()),
+            rtc: str0m::Rtc::new(now),
             signaling_handler: SignalingHandler::new(role),
             pending_remote_candidates: Vec::new(),
             pending_offer: None,
+            start_time: now,
+            video_mid: None,
         }
     }
 
@@ -35,12 +37,19 @@ impl RAMSCore {
     /// Transparently polls output from str0m and updates signaling state automatically.
     pub fn poll_output(&mut self) -> Result<str0m::Output, RtcError> {
         let output = self.rtc.poll_output()?;
-
-        // Automated State Transition: If str0m connects, move our signaling state to Stable.
-        if let str0m::Output::Event(str0m::Event::Connected) = &output {
-            if self.signaling_handler.state == SignalingState::TricklingIce {
-                let _ = self.signaling_handler.advance(SignalingState::Stable);
+        
+        match &output {
+            str0m::Output::Event(str0m::Event::Connected) => {
+                if self.signaling_handler.state == SignalingState::TricklingIce {
+                    let _ = self.signaling_handler.advance(SignalingState::Stable);
+                }
             }
+            str0m::Output::Event(str0m::Event::MediaAdded(media)) => {
+                if media.kind == str0m::media::MediaKind::Video {
+                    self.video_mid = Some(media.mid);
+                }
+            }
+            _ => {}
         }
 
         Ok(output)
@@ -62,7 +71,6 @@ impl RAMSCore {
     }
 
     /// Negotiates any pending local changes (tracks, channels) and creates an SDP Offer.
-    /// Updates the signaling state machine to WaitingForAnswer.
     pub fn create_offer(&mut self) -> Result<SignalingMessage, String> {
         if self.signaling_handler.role != SignalingRole::Initiator {
             return Err("Only the Initiator can create an offer".to_string());
@@ -83,7 +91,6 @@ impl RAMSCore {
     }
 
     /// Handles incoming signaling messages and updates the signaling state machine.
-    /// Returns an Option<SignalingMessage> containing an answer if an offer was received.
     pub fn handle_signaling(
         &mut self,
         msg: SignalingMessage,
@@ -110,8 +117,6 @@ impl RAMSCore {
         }
     }
 
-
-    /// Handles an incoming SDP Offer, updates the signaling state machine, and returns an SDP Answer.
     fn handle_offer(&mut self, sdp: String) -> Result<SignalingMessage, String> {
         self.signaling_handler.advance(SignalingState::TricklingIce)?;
 
@@ -131,7 +136,6 @@ impl RAMSCore {
         })
     }
 
-    /// Handles an incoming SDP Answer, updates the signaling state machine, and applies the answer to the RTC.
     fn handle_answer(&mut self, sdp: String) -> Result<(), String> {
         let pending = self
             .pending_offer
@@ -152,7 +156,6 @@ impl RAMSCore {
         Ok(())
     }
 
-    /// Handles an incoming ICE Candidate and adds it to the RTC.
     fn handle_candidate(&mut self, candidate: String) -> Result<(), String> {
         let cand = str0m::Candidate::from_sdp_string(&candidate)
             .map_err(|e| format!("Invalid SDP ICE Candidate: {:?}", e))?;
@@ -161,7 +164,6 @@ impl RAMSCore {
         Ok(())
     }
 
-    /// Checks whether we need to add ICE candidates to the buffer, or add them to RTC depending on the signaling state
     fn buffer_or_apply_candidate(&mut self, cand: str0m::Candidate) {
         let should_buffer = matches!(
             self.signaling_handler.state,
@@ -175,10 +177,27 @@ impl RAMSCore {
         }
     }
 
-    /// Deletes all candidates from the buffer and adds them to the RTC in str0m
     fn flush_pending_candidates(&mut self) {
         for cand in self.pending_remote_candidates.drain(..) {
             self.rtc.add_remote_candidate(cand);
         }
+    }
+
+    /// Writes a media chunk (VP8/WebM) to the specified MID.
+    pub fn write_media(&mut self, mid: Mid, data: Vec<u8>) -> Result<(), String> {
+        let writer = self.rtc.writer(mid).ok_or_else(|| "No writer for MID".to_string())?;
+        
+        let pt = writer.payload_params().next().map(|p| p.pt()).ok_or_else(|| "No PT for MID".to_string())?;
+        
+        let now = Instant::now();
+        let rtp_time = str0m::media::MediaTime::new(
+            (now - self.start_time).as_micros() as u64, 
+            str0m::media::Frequency::MICROS
+        );
+        
+        writer.write(pt, now, rtp_time, data)
+            .map_err(|e| format!("Failed to write media: {:?}", e))?;
+            
+        Ok(())
     }
 }
