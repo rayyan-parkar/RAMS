@@ -1,6 +1,6 @@
 import { WebSocketServer, WebSocket } from 'ws';
 
-const wss = new WebSocketServer({ port: 8090 });
+const wss = new WebSocketServer({ port: 8090, host: '0.0.0.0' });
 console.log('RAMS Signaling Server running on ws://localhost:8090');
 
 // room_id -> Set of connected WebSockets

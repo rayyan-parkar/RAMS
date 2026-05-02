@@ -20,18 +20,18 @@ fn greet(name: &str) -> String {
 #[tauri::command]
 async fn start_quick_call(
     room_id: String,
+    ws_url: String,
     state: State<'_, AppState>,
     app_handle: AppHandle,
 ) -> Result<(), String> {
-    println!("Tauri: start_quick_call for room {}", room_id);
-    let ws_url = "ws://localhost:8090";
+    println!("Tauri: start_quick_call for room {} at {}", room_id, ws_url);
 
     let mut conn_guard = state.connection.lock().await;
     if conn_guard.is_some() {
         return Err("A connection is already active. Close it first.".to_string());
     }
 
-    match crate::quick::quick_connect::connect(ws_url, &room_id).await {
+    match crate::quick::quick_connect::connect(&ws_url, &room_id).await {
         Ok((conn, mut event_rx)) => {
             *conn_guard = Some(conn);
 

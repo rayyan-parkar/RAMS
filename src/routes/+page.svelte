@@ -201,7 +201,7 @@
       log('[SYS] Preparing for RTP media routing...');
 
       // Actually invoke Rust WebRTC Start Command
-      await invoke('start_quick_call', { roomId });
+      await invoke('start_quick_call', { roomId, wsUrl: sigServer });
       log(`[SYS] Invoked start_quick_call for room: ${roomId}`);
       
       // Listen for events from Rust
