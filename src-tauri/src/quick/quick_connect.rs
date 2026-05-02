@@ -147,8 +147,9 @@ pub async fn connect(ws_url: &str, room: &str) -> Result<(QuickConnection, mpsc:
     // This is the "Engine" of the connection that runs as long as the session is active.
     let task_core = std::sync::Arc::clone(&core);
     let task_event_tx = event_tx.clone();
+    let task_ws_url = ws_url.to_string();
     let ws_task = tokio::spawn(async move {
-        if let Err(e) = run_connection_loop(task_core, shutdown_rx, ws_rx, ws_read, ws_write, ws_tx, task_event_tx).await {
+        if let Err(e) = run_connection_loop(task_core, shutdown_rx, ws_rx, ws_read, ws_write, ws_tx, task_event_tx, task_ws_url).await {
             eprintln!("QuickConnection loop exited with error: {:?}", e);
         }
     });
@@ -202,6 +203,7 @@ async fn run_connection_loop<R, W>(
     mut ws_write: W,
     ws_tx: mpsc::UnboundedSender<WireMessage>,
     event_tx: mpsc::UnboundedSender<QuickEvent>,
+    ws_url: String,
 ) -> Result<(), QuickError>
 where
     R: StreamExt<Item = Result<tokio_tungstenite::tungstenite::Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
@@ -213,7 +215,7 @@ where
 
     // Prepare local tracks and candidates before starting the loop
     initialize_local_media(&core).await.map_err(QuickError::Protocol)?;
-    add_local_candidate(&core, &socket, &ws_tx).map_err(QuickError::Protocol)?;
+    add_local_candidate(&core, &socket, &ws_tx, &ws_url).map_err(QuickError::Protocol)?;
 
     let mut timeout = Instant::now() + Duration::from_millis(100);
     let mut udp_buf = vec![0u8; 2000];
@@ -278,10 +280,17 @@ fn add_local_candidate(
     core: &std::sync::Arc<Mutex<RAMSCore>>,
     socket: &UdpSocket,
     ws_tx: &mpsc::UnboundedSender<WireMessage>,
+    ws_url: &str,
 ) -> Result<(), String> {
     let mut addr = socket.local_addr().map_err(|e| e.to_string())?;
     if addr.ip().is_unspecified() {
-        addr.set_ip(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)));
+        if let Some(local_ip) = get_local_ip(ws_url) {
+            println!("Quick: Discovered local IP: {}", local_ip);
+            addr.set_ip(local_ip);
+        } else {
+            println!("Quick: Failed to discover local IP, falling back to 127.0.0.1");
+            addr.set_ip(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)));
+        }
     }
     let candidate = str0m::Candidate::host(addr, "udp").map_err(|e| e.to_string())?;
 
@@ -384,4 +393,29 @@ async fn flush_core_outputs_to_network(
 async fn bind_local_socket() -> Result<UdpSocket, std::io::Error> {
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
     UdpSocket::bind(addr).await
+}
+
+fn get_local_ip(ws_url: &str) -> Option<IpAddr> {
+    use std::net::UdpSocket as StdUdpSocket;
+    
+    // Try to parse the host from the ws_url to use as a hint
+    let host = ws_url.trim_start_matches("ws://")
+        .trim_start_matches("wss://")
+        .split(':')
+        .next()?;
+
+    let socket = StdUdpSocket::bind("0.0.0.0:0").ok()?;
+    
+    // Try to connect to the signaling server's host to find the local interface
+    if socket.connect(format!("{}:80", host)).is_ok() {
+        if let Ok(addr) = socket.local_addr() {
+            if !addr.ip().is_unspecified() && !addr.ip().is_loopback() {
+                return Some(addr.ip());
+            }
+        }
+    }
+
+    // Fallback to 8.8.8.8 if the signaling server hint fails
+    socket.connect("8.8.8.8:80").ok()?;
+    socket.local_addr().ok().map(|addr| addr.ip())
 }
