@@ -96,9 +96,10 @@
     if (audioCtx) audioCtx.close();
     
     try {
-      await invoke('abort_rtc');
+      await invoke('close_call');
+      log('[OK] Call closed.');
     } catch (e) {
-      log(`[WARN] Failed to gracefully abort RTC: ${e}`);
+      log(`[WARN] Failed to gracefully close call: ${e}`);
     }
     
     window.location.reload();
@@ -175,20 +176,10 @@
       
       if (supportedMime) {
         log(`[SYS] Using MediaRecorder codec: ${supportedMime}`);
-        try {
-          mediaRecorder = new MediaRecorder(stream, { mimeType: supportedMime });
-          mediaRecorder.ondataavailable = async (e) => {
-            if (e.data.size > 0 && connectionState === 'CONNECTED') {
-              const buffer = await e.data.arrayBuffer();
-              await invoke('send_video_chunk', { chunk: Array.from(new Uint8Array(buffer)) });
-            }
-          };
-        } catch (mrErr) {
-          log(`[ERR] Failed to create MediaRecorder: ${mrErr}`);
-          mediaRecorder = null;
-        }
+        // mediaRecorder = new MediaRecorder(stream, { mimeType: supportedMime });
+        // mediaRecorder.ondataavailable = async (e) => { ... };
       } else {
-        log('[WARN] No supported MediaRecorder codec found. Video will not be transmitted.');
+        log('[WARN] No supported MediaRecorder codec found.');
       }
       
       // 3. Setup Remote MediaSource for incoming bytes
@@ -205,36 +196,44 @@
         }
       };
       
-      // 4. Listen for incoming remote video WebM chunks from Rust
-      const onRemoteChunk = new Channel<number[]>();
-      onRemoteChunk.onmessage = (message) => {
-        if (sourceBuffer && !sourceBuffer.updating) {
-          try {
-            sourceBuffer.appendBuffer(new Uint8Array(message));
-          } catch (e) {
-            log(`[ERR] SourceBuffer append error: ${e}`);
-          }
-        }
-      };
-      await invoke('subscribe_video', { onChunk: onRemoteChunk });
+      // 4. Listen for incoming remote video
+      // We will re-implement this using RTP soon
+      log('[SYS] Preparing for RTP media routing...');
 
       // Actually invoke Rust WebRTC Start Command
-      await invoke('start_rtc', { room: roomId, sigUrl: sigServer });
+      await invoke('start_quick_call', { roomId });
+      log(`[SYS] Invoked start_quick_call for room: ${roomId}`);
       
-      // Wait for Rust to notify us that the DataChannel is open
+      // Listen for events from Rust
       import('@tauri-apps/api/event').then(({ listen }) => {
-        listen('media_channel_open', () => {
+        listen('webrtc-connecting', (event) => {
+          log(`[RUST] Connecting: ${event.payload}`);
+        });
+
+        listen('webrtc-connected', (event) => {
           connectionState = 'CONNECTED';
+          log(`[RUST] Connected: ${event.payload}`);
           try {
-            mediaRecorder?.start(100); // 100ms chunks
-            log('[OK] WebRTC DataChannel established via str0m.');
-            log('[OK] Emitting WebM chunks over encrypted DTLS/SCTP tunnel.');
+            // mediaRecorder?.start(100); // We'll handle sending media separately soon
+            log('[OK] WebRTC session established in Rust core.');
             
             if (remoteVideoRef && localStream) {
               setupVisualizers(localStream, remoteVideoRef);
             }
-          } catch (startErr) {
-            log(`[ERR] Failed to start MediaRecorder: ${startErr}`);
+          } catch (err) {
+            log(`[ERR] Post-connection setup failed: ${err}`);
+          }
+        });
+
+        listen('webrtc-ice-state', (event) => {
+          log(`[ICE] State: ${event.payload}`);
+        });
+
+        listen('webrtc-media-data', (event) => {
+          const [mid, len] = event.payload as [string, number];
+          // Intensive logging for media data
+          if (Math.random() < 0.01) { // Log 1% of packets to avoid flooding too much but still see it's working
+             log(`[MEDIA] Incoming RTP for MID ${mid}, size: ${len} bytes`);
           }
         });
       });
@@ -304,120 +303,3 @@
     </div>
   </div>
 </div>
-
-<style>
-  .container {
-    width: 800px;
-    max-width: 95vw;
-  }
-  
-  .mt-4 { margin-top: 1rem; }
-  
-  .form-group label {
-    display: block;
-    color: var(--text-muted);
-    font-size: 0.8rem;
-    margin-bottom: 0.5rem;
-  }
-  
-  .checkbox-group {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.8rem;
-    margin-top: 1rem;
-    margin-bottom: 1rem;
-    border: 1px dashed var(--border-color);
-    padding: 0.5rem;
-    background: #050505;
-  }
-  
-  .checkbox-group label {
-    margin-bottom: 0;
-    display: inline-block;
-    color: var(--primary-glow);
-  }
-  
-  .video-grid {
-    display: flex;
-    gap: 1.5rem;
-  }
-  
-  .video-box {
-    border: 1px dashed var(--border-color);
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    padding: 0.5rem;
-    position: relative;
-  }
-  
-  .video-box span {
-    font-size: 0.8rem;
-    color: var(--text-muted);
-    margin-bottom: 0.5rem;
-    border-bottom: 1px dashed var(--border-color);
-    padding-bottom: 0.2rem;
-    display: block;
-  }
-  
-  video {
-    width: 100%;
-    height: 250px;
-    background: #050505;
-    object-fit: cover;
-  }
-  
-  video.glow {
-    color: var(--primary-glow);
-    text-shadow: 0 0 5px rgba(0, 255, 65, 0.4);
-  }
-  
-  .terminal {
-    height: 120px;
-    background: #050505;
-    border: 1px dashed var(--border-color);
-    padding: 0.8rem;
-    font-size: 0.8rem;
-    overflow-y: auto;
-    color: var(--text-muted);
-    display: flex;
-    flex-direction: column;
-  }
-  
-  .blink {
-    animation: blinker 1s linear infinite;
-    color: var(--primary-glow);
-  }
-  
-  @keyframes blinker {
-    50% { opacity: 0; }
-  }
-
-  .mic-visualizer {
-    font-size: 0.8rem;
-    color: var(--primary-glow);
-    font-family: monospace;
-    text-align: center;
-    margin-top: 0.5rem;
-    padding: 0.2rem;
-    background: #000;
-    border: 1px dashed var(--border-color);
-  }
-
-  .media-controls {
-    display: flex;
-    gap: 1rem;
-    justify-content: center;
-  }
-  
-  button.danger {
-    color: #ff3333;
-    border-color: #ff3333;
-  }
-  
-  button.danger:hover {
-    background: rgba(255, 51, 51, 0.1);
-    box-shadow: 0 0 10px rgba(255, 51, 51, 0.5);
-  }
-</style>

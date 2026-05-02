@@ -12,6 +12,15 @@ use str0m::media::Direction;
 use crate::core::RAMSCore;
 use crate::signaling::{SignalingMessage, SignalingRole};
 
+/// Events emitted by the quick connection.
+#[derive(Debug, Clone)]
+pub enum QuickEvent {
+    Connecting(String),
+    Connected,
+    IceState(String),
+    MediaData(str0m::media::Mid, usize),
+}
+
 /// Handle to a running quick connection.
 pub struct QuickConnection {
     core: std::sync::Arc<Mutex<RAMSCore>>,
@@ -77,15 +86,17 @@ enum WireMessage {
         is_initiator: bool,
     },
     PeerJoined,
-    Signaling {
-        #[serde(flatten)]
-        message: SignalingMessage,
-    },
+    #[serde(untagged)]
+    Signaling(SignalingMessage),
 }
 
 /// Orchestrator function that sets up a WebRTC session.
 /// It performs the initial handshake, sets up local resources, and spawns the background runner.
-pub async fn connect(ws_url: &str, room: &str) -> Result<QuickConnection, QuickError> {
+pub async fn connect(ws_url: &str, room: &str) -> Result<(QuickConnection, mpsc::UnboundedReceiver<QuickEvent>), QuickError> {
+    let (event_tx, event_rx) = mpsc::unbounded_channel();
+    println!("Quick: Connecting to {} for room {}", ws_url, room);
+    let _ = event_tx.send(QuickEvent::Connecting(format!("Connecting to room: {}", room)));
+
     // First establish WebSocket Connection
     let (ws_stream, _) = connect_async(ws_url).await?;
     let (mut ws_write, mut ws_read) = ws_stream.split();
@@ -103,17 +114,18 @@ pub async fn connect(ws_url: &str, room: &str) -> Result<QuickConnection, QuickE
     // 4. Spawn the background runner
     // This is the "Engine" of the connection that runs as long as the session is active.
     let task_core = std::sync::Arc::clone(&core);
+    let task_event_tx = event_tx.clone();
     let ws_task = tokio::spawn(async move {
-        if let Err(e) = run_connection_loop(task_core, shutdown_rx, ws_rx, ws_read, ws_write, ws_tx).await {
+        if let Err(e) = run_connection_loop(task_core, shutdown_rx, ws_rx, ws_read, ws_write, ws_tx, task_event_tx).await {
             eprintln!("QuickConnection loop exited with error: {:?}", e);
         }
     });
 
-    Ok(QuickConnection {
+    Ok((QuickConnection {
         core,
         shutdown: Some(shutdown_tx),
         task: ws_task,
-    })
+    }, event_rx))
 }
 
 /// Helper to handle the initial Join/Joined handshake on the WebSocket.
@@ -157,11 +169,13 @@ async fn run_connection_loop<R, W>(
     mut ws_read: R,
     mut ws_write: W,
     ws_tx: mpsc::UnboundedSender<WireMessage>,
+    event_tx: mpsc::UnboundedSender<QuickEvent>,
 ) -> Result<(), QuickError>
 where
     R: StreamExt<Item = Result<tokio_tungstenite::tungstenite::Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
     W: SinkExt<tokio_tungstenite::tungstenite::Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
 {
+    println!("Quick: Entering background connection loop");
     // Initialize the UDP socket for media transmission
     let socket = bind_local_socket().await?;
 
@@ -215,7 +229,7 @@ where
         }
 
         // After every event, we check if the engine has data it wants to send out
-        timeout = flush_core_outputs_to_network(&core, &socket, &ws_tx).await;
+        timeout = flush_core_outputs_to_network(&core, &socket, &ws_tx, &event_tx).await;
     }
 
     Ok(())
@@ -240,11 +254,10 @@ fn add_local_candidate(
         let _ = guard.rtc.add_local_candidate(candidate.clone());
     }
 
-    let _ = ws_tx.send(WireMessage::Signaling {
-        message: SignalingMessage::Candidate {
-            candidate: candidate.to_sdp_string(),
-        },
-    });
+    println!("Quick: Sending local ICE candidate: {}", candidate.to_sdp_string());
+    let _ = ws_tx.send(WireMessage::Signaling(SignalingMessage::Candidate {
+        candidate: candidate.to_sdp_string(),
+    }));
 
     Ok(())
 }
@@ -261,15 +274,17 @@ async fn dispatch_websocket_message_to_core(
             let mut core = core.lock().await;
             if core.signaling_handler.role == SignalingRole::Initiator {
                 let offer = core.create_offer()?;
-                let _ = ws_tx.send(WireMessage::Signaling { message: offer });
+                let _ = ws_tx.send(WireMessage::Signaling(offer));
             }
             Ok(())
         }
-        WireMessage::Signaling { message } => {
+        WireMessage::Signaling(message) => {
             // Pass signaling payloads directly to the core state machine.
+            println!("Quick: Received remote signaling: {:?}", message);
             let mut core = core.lock().await;
             if let Some(response) = core.handle_signaling(message)? {
-                let _ = ws_tx.send(WireMessage::Signaling { message: response });
+                println!("Quick: Sending signaling response: {:?}", response);
+                let _ = ws_tx.send(WireMessage::Signaling(response));
             }
             Ok(())
         }
@@ -283,6 +298,7 @@ async fn flush_core_outputs_to_network(
     core: &std::sync::Arc<Mutex<RAMSCore>>,
     socket: &UdpSocket,
     _ws_tx: &mpsc::UnboundedSender<WireMessage>,
+    event_tx: &mpsc::UnboundedSender<QuickEvent>,
 ) -> Instant {
     let mut next_timeout = Instant::now() + Duration::from_millis(100);
 
@@ -306,9 +322,20 @@ async fn flush_core_outputs_to_network(
                 // High-level events for the user application.
                 match event {
                     str0m::Event::Connected => {
-                        println!("WebRTC Connected!");
+                        println!("Quick: WebRTC Connected!");
+                        let _ = event_tx.send(QuickEvent::Connected);
                     }
-                    _ => {}
+                    str0m::Event::IceConnectionStateChange(state) => {
+                        println!("Quick: ICE State Change: {:?}", state);
+                        let _ = event_tx.send(QuickEvent::IceState(format!("{:?}", state)));
+                    }
+                    str0m::Event::MediaData(data) => {
+                        // Route incoming str0m MediaData events
+                        let _ = event_tx.send(QuickEvent::MediaData(data.mid, data.data.len()));
+                    }
+                    _ => {
+                        // println!("Quick: Other str0m Event: {:?}", event);
+                    }
                 }
             }
         }
@@ -318,6 +345,6 @@ async fn flush_core_outputs_to_network(
 }
 
 async fn bind_local_socket() -> Result<UdpSocket, std::io::Error> {
-    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
     UdpSocket::bind(addr).await
 }
