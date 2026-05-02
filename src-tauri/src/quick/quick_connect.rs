@@ -416,6 +416,25 @@ fn get_local_ip(ws_url: &str) -> Option<IpAddr> {
     }
 
     // Fallback to 8.8.8.8 if the signaling server hint fails
-    socket.connect("8.8.8.8:80").ok()?;
-    socket.local_addr().ok().map(|addr| addr.ip())
+    if let Ok(_) = socket.connect("8.8.8.8:80") {
+        if let Ok(addr) = socket.local_addr() {
+            if !addr.ip().is_unspecified() && !addr.ip().is_loopback() {
+                return Some(addr.ip());
+            }
+        }
+    }
+
+    // Linux-specific fallback: use 'hostname -I' to get all IPs
+    if let Ok(output) = std::process::Command::new("hostname").arg("-I").output() {
+        let s = String::from_utf8_lossy(&output.stdout);
+        for ip_str in s.split_whitespace() {
+            if let Ok(ip) = ip_str.parse::<IpAddr>() {
+                if !ip.is_loopback() && ip.is_ipv4() {
+                    return Some(ip);
+                }
+            }
+        }
+    }
+
+    None
 }
