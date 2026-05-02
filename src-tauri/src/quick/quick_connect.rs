@@ -83,11 +83,43 @@ enum WireMessage {
     },
     Joined {
         room: String,
+        #[serde(rename = "isInitiator")]
         is_initiator: bool,
     },
     PeerJoined,
-    #[serde(untagged)]
-    Signaling(SignalingMessage),
+    // Flattened SignalingMessage variants
+    Offer {
+        sdp: String,
+    },
+    Answer {
+        sdp: String,
+    },
+    Candidate {
+        candidate: String,
+    },
+}
+
+impl From<SignalingMessage> for WireMessage {
+    fn from(msg: SignalingMessage) -> Self {
+        match msg {
+            SignalingMessage::Offer { sdp } => WireMessage::Offer { sdp },
+            SignalingMessage::Answer { sdp } => WireMessage::Answer { sdp },
+            SignalingMessage::Candidate { candidate } => WireMessage::Candidate { candidate },
+        }
+    }
+}
+
+impl TryFrom<WireMessage> for SignalingMessage {
+    type Error = ();
+
+    fn try_from(msg: WireMessage) -> Result<Self, Self::Error> {
+        match msg {
+            WireMessage::Offer { sdp } => Ok(SignalingMessage::Offer { sdp }),
+            WireMessage::Answer { sdp } => Ok(SignalingMessage::Answer { sdp }),
+            WireMessage::Candidate { candidate } => Ok(SignalingMessage::Candidate { candidate }),
+            _ => Err(()),
+        }
+    }
 }
 
 /// Orchestrator function that sets up a WebRTC session.
@@ -247,7 +279,10 @@ fn add_local_candidate(
     socket: &UdpSocket,
     ws_tx: &mpsc::UnboundedSender<WireMessage>,
 ) -> Result<(), String> {
-    let addr = socket.local_addr().map_err(|e| e.to_string())?;
+    let mut addr = socket.local_addr().map_err(|e| e.to_string())?;
+    if addr.ip().is_unspecified() {
+        addr.set_ip(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)));
+    }
     let candidate = str0m::Candidate::host(addr, "udp").map_err(|e| e.to_string())?;
 
     if let Ok(mut guard) = core.try_lock() {
@@ -255,9 +290,9 @@ fn add_local_candidate(
     }
 
     println!("Quick: Sending local ICE candidate: {}", candidate.to_sdp_string());
-    let _ = ws_tx.send(WireMessage::Signaling(SignalingMessage::Candidate {
+    let _ = ws_tx.send(WireMessage::Candidate {
         candidate: candidate.to_sdp_string(),
-    }));
+    });
 
     Ok(())
 }
@@ -274,17 +309,19 @@ async fn dispatch_websocket_message_to_core(
             let mut core = core.lock().await;
             if core.signaling_handler.role == SignalingRole::Initiator {
                 let offer = core.create_offer()?;
-                let _ = ws_tx.send(WireMessage::Signaling(offer));
+                let _ = ws_tx.send(offer.into());
             }
             Ok(())
         }
-        WireMessage::Signaling(message) => {
+        msg @ (WireMessage::Offer { .. } | WireMessage::Answer { .. } | WireMessage::Candidate { .. }) => {
             // Pass signaling payloads directly to the core state machine.
-            println!("Quick: Received remote signaling: {:?}", message);
-            let mut core = core.lock().await;
-            if let Some(response) = core.handle_signaling(message)? {
-                println!("Quick: Sending signaling response: {:?}", response);
-                let _ = ws_tx.send(WireMessage::Signaling(response));
+            if let Ok(signaling) = SignalingMessage::try_from(msg) {
+                println!("Quick: Received remote signaling: {:?}", signaling);
+                let mut core = core.lock().await;
+                if let Some(response) = core.handle_signaling(signaling)? {
+                    println!("Quick: Sending signaling response: {:?}", response);
+                    let _ = ws_tx.send(response.into());
+                }
             }
             Ok(())
         }
