@@ -1,15 +1,5 @@
-pub mod builder;
-
-#[cfg(feature = "core")]
 pub mod core;
-
-#[cfg(feature = "quick")]
-pub mod media;
-
-#[cfg(feature = "quick")]
 pub mod quick;
-
-#[cfg(feature = "quick")]
 pub mod signaling;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
