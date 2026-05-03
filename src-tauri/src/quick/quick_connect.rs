@@ -224,9 +224,21 @@ where
     println!("Quick: Bound local UDP socket at {}", socket.local_addr()?);
 
     // Prepare local tracks and candidates before starting the loop
-    println!("Quick: Initializing local media tracks (audio + video sendrecv)");
-    initialize_local_media(&core).await.map_err(QuickError::Protocol)?;
-    println!("Quick: Local media tracks initialized, creating local ICE candidate");
+    // IMPORTANT: Only the Initiator should prepare media tracks BEFORE the handshake.
+    // The Responder must wait to receive the offer first, then accept it.
+    {
+        let core_guard = core.lock().await;
+        if core_guard.signaling_handler.role == crate::signaling::SignalingRole::Initiator {
+            println!("Quick: Initiator - initializing local media tracks (audio + video sendrecv)");
+            drop(core_guard);
+            initialize_local_media(&core).await.map_err(QuickError::Protocol)?;
+            println!("Quick: Local media tracks initialized");
+        } else {
+            println!("Quick: Responder - deferring media track initialization until after offer received");
+            drop(core_guard);
+        }
+    }
+    println!("Quick: Creating local ICE candidate");
     let local_ip = add_local_candidate(&core, &socket, &ws_tx, &ws_url).await.map_err(QuickError::Protocol)?;
 
     let mut timeout = Instant::now() + Duration::from_millis(100);
