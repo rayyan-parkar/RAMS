@@ -250,8 +250,82 @@
 
       /** Detect if a buffer starts with Annex-B start codes */
       function isAnnexB(data: Uint8Array): boolean {
-        return (data[0] === 0 && data[1] === 0 && data[2] === 0 && data[3] === 1) ||
-               (data[0] === 0 && data[1] === 0 && data[2] === 1);
+        return (data.length >= 4 && data[0] === 0 && data[1] === 0 && data[2] === 0 && data[3] === 1) ||
+               (data.length >= 3 && data[0] === 0 && data[1] === 0 && data[2] === 1);
+      }
+
+      /** Split Annex-B stream into individual NAL units (without start codes) */
+      function parseAnnexB(data: Uint8Array): Uint8Array[] {
+        const nals: Uint8Array[] = [];
+        let i = 0;
+        while (i < data.length) {
+          let start = -1;
+          for (let j = i; j < data.length - 2; j++) {
+            if (data[j] === 0 && data[j+1] === 0 && data[j+2] === 1) {
+              const is4Byte = (j > 0 && data[j-1] === 0);
+              const scStart = is4Byte ? j - 1 : j;
+              const scLen = is4Byte ? 4 : 3;
+              if (i < scStart) nals.push(data.subarray(i, scStart));
+              start = scStart + scLen;
+              break;
+            }
+          }
+          if (start === -1) {
+            if (i < data.length) nals.push(data.subarray(i));
+            break;
+          }
+          i = start;
+        }
+        return nals;
+      }
+
+      /** Convert Annex-B to AVCC (length-prefixed NALUs) */
+      function annexBToAVCC(data: Uint8Array): Uint8Array {
+        const nals = parseAnnexB(data);
+        const totalLen = nals.reduce((sum, n) => sum + 4 + n.length, 0);
+        const avcc = new Uint8Array(totalLen);
+        let offset = 0;
+        for (const n of nals) {
+          avcc[offset]   = (n.length >> 24) & 0xff;
+          avcc[offset+1] = (n.length >> 16) & 0xff;
+          avcc[offset+2] = (n.length >> 8) & 0xff;
+          avcc[offset+3] = n.length & 0xff;
+          avcc.set(n, offset + 4);
+          offset += 4 + n.length;
+        }
+        return avcc;
+      }
+
+      /** Extract SPS/PPS from Annex-B stream and construct AVCDecoderConfigurationRecord */
+      function createAVCCDescriptionFromAnnexB(annexB: Uint8Array): ArrayBuffer | null {
+        const nals = parseAnnexB(annexB);
+        let sps: Uint8Array | null = null;
+        let pps: Uint8Array | null = null;
+        for (const nal of nals) {
+          const t = nalType(nal[0]);
+          if (t === 7 && !sps) sps = nal;
+          if (t === 8 && !pps) pps = nal;
+        }
+        if (!sps || !pps) return null;
+
+        const desc = new Uint8Array(5 + 3 + sps.length + 3 + pps.length);
+        desc[0] = 1; // configurationVersion
+        desc[1] = sps[1]; // AVCProfileIndication
+        desc[2] = sps[2]; // profile_compatibility
+        desc[3] = sps[3]; // AVCLevelIndication
+        desc[4] = 0xff; // lengthSizeMinusOne = 3 (so 4 bytes)
+        desc[5] = 0xe1; // numOfSequenceParameterSets = 1
+        desc[6] = (sps.length >> 8) & 0xff;
+        desc[7] = sps.length & 0xff;
+        desc.set(sps, 8);
+        
+        const offset = 8 + sps.length;
+        desc[offset] = 1; // numOfPictureParameterSets = 1
+        desc[offset+1] = (pps.length >> 8) & 0xff;
+        desc[offset+2] = pps.length & 0xff;
+        desc.set(pps, offset + 3);
+        
+        return desc.buffer;
       }
 
       /** List NAL unit types in an Annex-B stream */
@@ -275,8 +349,12 @@
         return false;
       }
 
+      // Receiver decoder state
+      let currentDescBuf: ArrayBuffer | null = null;
+
       function createVideoDecoder() {
         waitingForKeyframe = true;
+        currentDescBuf = null;
         videoDecoder = new (window as any).VideoDecoder({
           output: (frame: any) => {
             remoteFrameCount++;
@@ -298,11 +376,9 @@
             }
           }
         });
-        videoDecoder.configure({ 
-          codec: 'avc1.42001f',
-          hardwareAcceleration: 'prefer-software' // prefer-software: use avdec_h264 (ffmpeg) not nvdec
-        });
-        log(`[DEC] VideoDecoder created, state=${videoDecoder.state}, accel=prefer-software`);
+        // We don't configure the decoder yet! We must wait for the first IDR keyframe
+        // to extract the AVCC description, and then call configure() dynamically.
+        log(`[DEC] VideoDecoder created, state=${videoDecoder.state}, waiting for description...`);
       }
       createVideoDecoder();
 
@@ -450,8 +526,6 @@
             log(`[RX #${rxVideoChunks}] ${uint8.length} bytes, format=${format}, NALs=[${nalTypes.join(', ')}], hex=[${head}]`);
           }
 
-          // The sender converts to Annex-B and prepends SPS/PPS on keyframes.
-          // Detect IDR (keyframe) from NAL type 5.
           const isIDR = containsIDR(uint8);
           
           if (waitingForKeyframe) {
@@ -462,15 +536,40 @@
             waitingForKeyframe = false;
             const nalTypes = listAnnexBNalTypes(uint8);
             log(`[RX] ✓ Got IDR keyframe at frame #${rxVideoChunks}, NALs=[${nalTypes.join(', ')}], ${uint8.length} bytes`);
+            
+            // WebKitGTK WebCodecs STRICTLY requires AVCC description to configure the decoder!
+            // We must extract SPS and PPS from this Annex-B IDR keyframe to build the description.
+            const newDesc = createAVCCDescriptionFromAnnexB(uint8);
+            if (newDesc) {
+              currentDescBuf = newDesc;
+              const descHex = Array.from(new Uint8Array(currentDescBuf).slice(0, 20)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+              log(`[RX] Synthesized AVCC description (${currentDescBuf.byteLength}B), hex=[${descHex}]`);
+              
+              videoDecoder.configure({
+                codec: 'avc1.42001f',
+                hardwareAcceleration: 'prefer-software',
+                description: currentDescBuf
+              });
+              log(`[RX] Decoder configured dynamically, state=${videoDecoder.state}`);
+            } else {
+              log(`[ERR] Failed to extract SPS/PPS from IDR frame! Cannot configure decoder.`);
+              waitingForKeyframe = true; // Wait for the next one
+              return;
+            }
           }
 
           try {
             if (videoDecoder && videoDecoder.state === 'configured') {
               videoTimestamp += 33333;
+              
+              // WebKitGTK WebCodecs STRICTLY requires AVCC formatted chunks (length prefixed)!
+              // We must convert the incoming Annex-B stream back to AVCC before feeding it.
+              const avccData = isAnnexB(uint8) ? annexBToAVCC(uint8) : uint8;
+
               videoDecoder.decode(new (window as any).EncodedVideoChunk({
                 type: isIDR ? 'key' : 'delta',
                 timestamp: videoTimestamp,
-                data: uint8
+                data: avccData
               }));
             } else {
               if (rxVideoChunks % 100 === 0) log(`[WARN] Decoder not ready: state=${videoDecoder?.state}`);
