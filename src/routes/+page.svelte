@@ -215,24 +215,15 @@
       let rxVideoChunks = 0;
       let rxAudioChunks = 0;
 
-      // RFC 7741 VP8 RTP Payload Descriptor parser
-      function parseVp8PayloadOffset(buf: Uint8Array): number {
-        if (buf.length < 1) return 0;
-        let off = 1;
-        const hasExtension = (buf[0] & 0x80) !== 0;
-        if (hasExtension && buf.length > 1) {
-          const ext = buf[1];
-          off = 2;
-          const hasPictureId = (ext & 0x80) !== 0;
-          const hasTl0PicIdx = (ext & 0x40) !== 0;
-          const hasTidOrKeyIdx = (ext & 0x20) !== 0 || (ext & 0x10) !== 0;
-          if (hasPictureId && off < buf.length) {
-            off += (buf[off] & 0x80) !== 0 ? 2 : 1; // 16-bit or 7-bit PictureID
-          }
-          if (hasTl0PicIdx) off += 1;
-          if (hasTidOrKeyIdx) off += 1;
+      // Check if VP8 is actually supported in this browser engine
+      try {
+        const support = await (window as any).VideoDecoder.isConfigSupported({ codec: 'vp8' });
+        log(`[AUDIT] VP8 support: supported=${support.supported}`);
+        if (!support.supported) {
+          log('[ERR] VP8 is NOT supported by this browser. Video will not work.');
         }
-        return Math.min(off, buf.length);
+      } catch (e) {
+        log(`[WARN] Could not check VP8 support: ${e}`);
       }
 
       await listen('webrtc-media-data', (event) => {
@@ -242,17 +233,23 @@
 
         if (kind === 'video') {
           rxVideoChunks++;
-          
-          const offset = parseVp8PayloadOffset(uint8);
-          if (offset >= uint8.length) return;
 
-          const bitstream = uint8.slice(offset);
-          const isKeyframe = (bitstream[0] & 0x01) === 0;
+          // str0m MediaData gives us COMPLETE depayloaded VP8 frames.
+          // Do NOT strip any bytes — the data is ready to decode as-is.
+          const isKeyframe = (uint8[0] & 0x01) === 0;
+
+          // Log first frame hex for forensics
+          if (rxVideoChunks === 1) {
+            const head = Array.from(uint8.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+            log(`[PROBE] First video frame: ${uint8.length} bytes, keyframe=${isKeyframe}`);
+            log(`[PROBE] Hex: [${head}]`);
+          }
 
           if (waitingForKeyframe) {
             if (!isKeyframe) return; 
             waitingForKeyframe = false;
-            log(`[SYS] Keyframe arrived (size: ${bitstream.length}). Resuming...`);
+            const head = Array.from(uint8.slice(0, 10)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+            log(`[SYS] Keyframe arrived (${uint8.length} bytes). Head: [${head}]`);
           }
 
           try {
@@ -261,14 +258,13 @@
               videoDecoder.decode(new (window as any).EncodedVideoChunk({
                 type: isKeyframe ? 'key' : 'delta',
                 timestamp: videoTimestamp,
-                data: bitstream
+                data: uint8
               }));
             }
-          } catch (e) {
-            const head = Array.from(bitstream.slice(0, 10)).map(b => b.toString(16).padStart(2, '0')).join(' ');
-            log(`[ERR] Decode failed (${isKeyframe ? 'KEY' : 'DELTA'}): ${e}`);
-            log(`[ERR] Bitstream head: [${head}]`);
-            if (e.toString().includes('Key frame is required')) waitingForKeyframe = true;
+          } catch (e: any) {
+            const head = Array.from(uint8.slice(0, 10)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+            log(`[ERR] Decode threw: ${e.name}: ${e.message}`);
+            log(`[ERR] Frame: ${uint8.length} bytes, key=${isKeyframe}, head=[${head}]`);
           }
         } else if (kind === 'audio') {
           rxAudioChunks++;
