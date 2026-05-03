@@ -227,7 +227,7 @@ where
     println!("Quick: Initializing local media tracks (audio + video sendrecv)");
     initialize_local_media(&core).await.map_err(QuickError::Protocol)?;
     println!("Quick: Local media tracks initialized, creating local ICE candidate");
-    add_local_candidate(&core, &socket, &ws_tx, &ws_url).map_err(QuickError::Protocol)?;
+    let local_ip = add_local_candidate(&core, &socket, &ws_tx, &ws_url).map_err(QuickError::Protocol)?;
 
     let mut timeout = Instant::now() + Duration::from_millis(100);
     let mut udp_buf = vec![0u8; 2000];
@@ -262,19 +262,13 @@ where
 
             // Handle incoming UDP media packets (STUN, DTLS, RTP)
             Ok((n, source)) = socket.recv_from(&mut udp_buf) => {
-                let destination = socket.local_addr()?;
-                let contents = &udp_buf[..n];
-                println!(
-                    "Quick: Received UDP packet from {} to {} ({} bytes)",
-                    source,
-                    destination,
-                    n
-                );
-
                 // Feed the raw bytes into the str0m engine
+                let mut destination = socket.local_addr()?;
+                destination.set_ip(local_ip);
+                
+                let contents = &udp_buf[..n];
                 if let Ok(receive) = str0m::net::Receive::new(str0m::net::Protocol::Udp, source, destination, contents) {
                     let input = str0m::Input::Receive(Instant::now(), receive);
-                    println!("Quick: Forwarding UDP packet into str0m input pipeline");
                     let _ = core.lock().await.handle_input(input);
                 } else {
                     println!("Quick: Failed to parse UDP packet into str0m receive frame");
@@ -308,7 +302,7 @@ fn add_local_candidate(
     socket: &UdpSocket,
     ws_tx: &mpsc::UnboundedSender<WireMessage>,
     ws_url: &str,
-) -> Result<(), String> {
+) -> Result<IpAddr, String> {
     let mut addr = socket.local_addr().map_err(|e| e.to_string())?;
     println!("Quick: Local UDP candidate base address before IP patch: {}", addr);
     if addr.ip().is_unspecified() {
@@ -335,7 +329,7 @@ fn add_local_candidate(
         candidate: candidate.to_sdp_string(),
     });
 
-    Ok(())
+    Ok(addr.ip())
 }
 
 /// Translates incoming signaling messages (Offers, Answers, Candidates) into actions for the RAMSCore.

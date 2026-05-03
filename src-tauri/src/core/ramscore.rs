@@ -76,6 +76,9 @@ impl RAMSCore {
                     println!("RAMSCore: stored video_mid = {:?}", self.video_mid);
                 }
             }
+            str0m::Output::Event(str0m::Event::IceConnectionStateChange(state)) => {
+                println!("RAMSCore: ICE Connection State Change: {:?}", state);
+            }
             _ => {}
         }
 
