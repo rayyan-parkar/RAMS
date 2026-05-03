@@ -10,9 +10,13 @@ wss.on('connection', (ws: WebSocket) => {
     let currentRoom: string | null = null;
     console.log('[+] Client connected');
 
-    ws.on('message', (data: Buffer) => {
+    ws.on('message', (data: string | Uint8Array | ArrayBuffer) => {
         try {
-            const msg = JSON.parse(data.toString());
+            const raw = typeof data === 'string'
+                ? data
+                : new TextDecoder().decode(data instanceof ArrayBuffer ? new Uint8Array(data) : data);
+            const msg = JSON.parse(raw);
+            console.log(`[>>] Incoming websocket message: ${msg.type || 'unknown'}`);
 
             // Rust sends: {"type":"join","room":"..."} via serde(tag = "type", rename_all = "camelCase")
             if (msg.type === "join" && msg.room) {
@@ -32,11 +36,13 @@ wss.on('connection', (ws: WebSocket) => {
                     room: currentRoom,
                     isInitiator: isInitiator,
                 }));
+                console.log(`[<<] Sent joined response to ${isInitiator ? 'initiator' : 'responder'} for room ${currentRoom}`);
 
                 // Notify existing peers that someone joined
                 if (!isInitiator) {
                     for (const client of room) {
                         if (client !== ws && client.readyState === WebSocket.OPEN) {
+                            console.log(`[>>] Notifying peerJoined to room ${currentRoom}`);
                             client.send(JSON.stringify({ type: "peerJoined" }));
                         }
                     }
@@ -51,13 +57,16 @@ wss.on('connection', (ws: WebSocket) => {
 
                 for (const client of rooms.get(currentRoom)!) {
                     if (client !== ws && client.readyState === WebSocket.OPEN) {
+                        console.log(`[>>] Forwarded ${actionType} to peer in room ${currentRoom}`);
                         client.send(JSON.stringify(msg));
                     }
                 }
+            } else {
+                console.log('[!!] Received signaling message before room join or for missing room');
             }
 
         } catch (e) {
-            console.error("Failed to parse incoming message:", data.toString(), e);
+            console.error("Failed to parse incoming message:", data, e);
         }
     });
 

@@ -111,6 +111,70 @@
     log(`[SYS] authenticating room key: ${roomId}`);
     
     try {
+      log('[SYS] Attaching Rust event listeners before connecting...');
+      const { listen } = await import('@tauri-apps/api/event');
+
+      listen('webrtc-connecting', (event) => {
+        log(`[RUST] Connecting: ${event.payload}`);
+      });
+
+      listen('webrtc-connected', (event) => {
+        connectionState = 'CONNECTED';
+        log(`[RUST] Connected: ${event.payload}`);
+        try {
+          mediaRecorder?.start(100);
+          log('[OK] MediaRecorder started at 100ms chunks.');
+
+          if (remoteVideoRef && localStream) {
+            setupVisualizers(localStream, remoteVideoRef);
+          }
+        } catch (err) {
+          log(`[ERR] Post-connection setup failed: ${err}`);
+        }
+      });
+
+      listen('webrtc-ice-state', (event) => {
+        log(`[ICE] State: ${event.payload}`);
+      });
+
+      const remoteQueue: Uint8Array[] = [];
+      let isProcessingQueue = false;
+
+      const processQueue = async () => {
+        if (isProcessingQueue || !sourceBuffer || sourceBuffer.updating || remoteQueue.length === 0) return;
+        
+        isProcessingQueue = true;
+        try {
+          const chunk = remoteQueue.shift();
+          if (chunk) {
+            log(`[MEDIA] Appending remote chunk (${chunk.length} bytes)`);
+            sourceBuffer.appendBuffer(chunk);
+          }
+        } catch (err) {
+          log(`[ERR] SourceBuffer append failed: ${err}`);
+        } finally {
+          isProcessingQueue = false;
+        }
+      };
+
+      listen('webrtc-media-data', (event) => {
+        const [mid, data] = event.payload as [string, number[]];
+        const uint8 = new Uint8Array(data);
+        log(`[MEDIA] Received media for MID ${mid}, ${uint8.length} bytes`);
+        remoteQueue.push(uint8);
+        processQueue();
+
+        if (Math.random() < 0.05) {
+          log(`[MEDIA] Incoming media bytes: ${uint8.length}`);
+        }
+      });
+
+      setInterval(() => {
+        if (sourceBuffer && !sourceBuffer.updating && remoteQueue.length > 0) {
+          processQueue();
+        }
+      }, 50);
+
       // 1. Capture local webcam
       let stream: MediaStream;
       
@@ -180,16 +244,19 @@
           mimeType: supportedMime,
           videoBitsPerSecond: 1000000 // 1Mbps
         });
+        log('[SYS] MediaRecorder object created; waiting to start after connected event.');
         
         mediaRecorder.ondataavailable = async (e) => {
           if (e.data.size > 0 && connectionState === 'CONNECTED') {
             try {
+              log(`[MEDIA] Capturing local chunk of ${e.data.size} bytes`);
               const buffer = await e.data.arrayBuffer();
               const uint8 = new Uint8Array(buffer);
+              log(`[MEDIA] Sending local chunk to Rust (${uint8.length} bytes)`);
               // Send chunk to Rust
               await invoke('send_video_chunk', { data: Array.from(uint8) });
             } catch (err) {
-              // Silently fail on small chunk errors to avoid log spam
+              log(`[ERR] Failed to send local media chunk: ${err}`);
             }
           }
         };
@@ -204,7 +271,9 @@
       }
       mediaSource.onsourceopen = () => {
         try {
+          log('[MEDIA] MediaSource opened');
           sourceBuffer = mediaSource!.addSourceBuffer(targetMime);
+          log(`[MEDIA] SourceBuffer created with MIME: ${targetMime}`);
         } catch (e) {
           log(`[ERR] MediaSource error: ${e}. Fallback to vp8 only.`);
           sourceBuffer = mediaSource!.addSourceBuffer('video/webm; codecs="vp8"');
@@ -216,73 +285,9 @@
       log('[SYS] Preparing for RTP media routing...');
 
       // Actually invoke Rust WebRTC Start Command
+      log('[SYS] Calling Rust start_quick_call now...');
       await invoke('start_quick_call', { roomId, wsUrl: sigServer });
       log(`[SYS] Invoked start_quick_call for room: ${roomId}`);
-      
-      // Listen for events from Rust
-      import('@tauri-apps/api/event').then(({ listen }) => {
-        listen('webrtc-connecting', (event) => {
-          log(`[RUST] Connecting: ${event.payload}`);
-        });
-
-        listen('webrtc-connected', (event) => {
-          connectionState = 'CONNECTED';
-          log(`[RUST] Connected: ${event.payload}`);
-          try {
-            mediaRecorder?.start(100); // Send chunks every 100ms
-            log('[OK] WebRTC session established in Rust core.');
-            
-            if (remoteVideoRef && localStream) {
-              setupVisualizers(localStream, remoteVideoRef);
-            }
-          } catch (err) {
-            log(`[ERR] Post-connection setup failed: ${err}`);
-          }
-        });
-
-        listen('webrtc-ice-state', (event) => {
-          log(`[ICE] State: ${event.payload}`);
-        });
-
-        const remoteQueue: Uint8Array[] = [];
-        let isProcessingQueue = false;
-
-        const processQueue = async () => {
-          if (isProcessingQueue || !sourceBuffer || sourceBuffer.updating || remoteQueue.length === 0) return;
-          
-          isProcessingQueue = true;
-          try {
-            const chunk = remoteQueue.shift();
-            if (chunk) {
-              sourceBuffer.appendBuffer(chunk);
-            }
-          } catch (err) {
-            log(`[ERR] SourceBuffer append failed: ${err}`);
-          } finally {
-            isProcessingQueue = false;
-          }
-        };
-
-        listen('webrtc-media-data', (event) => {
-          const [mid, data] = event.payload as [string, number[]];
-          const uint8 = new Uint8Array(data);
-          
-          remoteQueue.push(uint8);
-          processQueue();
-
-          // Occasionally log to show data is flowing
-          if (Math.random() < 0.05) {
-             log(`[MEDIA] Incoming RTP: ${uint8.length} bytes`);
-          }
-        });
-
-        // Ensure we keep processing when the buffer is ready
-        setInterval(() => {
-          if (sourceBuffer && !sourceBuffer.updating && remoteQueue.length > 0) {
-            processQueue();
-          }
-        }, 50);
-      });
     } catch (e) {
       log(`[ERR] ${e}`);
       connectionState = 'DISCONNECTED';

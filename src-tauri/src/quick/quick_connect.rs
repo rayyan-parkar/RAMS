@@ -130,7 +130,9 @@ pub async fn connect(ws_url: &str, room: &str) -> Result<(QuickConnection, mpsc:
     let _ = event_tx.send(QuickEvent::Connecting(format!("Connecting to room: {}", room)));
 
     // First establish WebSocket Connection
+    println!("Quick: Opening websocket connection to signaling server...");
     let (ws_stream, _) = connect_async(ws_url).await?;
+    println!("Quick: WebSocket connected, waiting for room role assignment...");
     let (mut ws_write, mut ws_read) = ws_stream.split();
 
     // 2. Negotiate Role (Join Room)
@@ -172,6 +174,7 @@ where
     W: SinkExt<tokio_tungstenite::tungstenite::Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
 {
     let join = WireMessage::Join { room: room.to_string() };
+    println!("Quick: Sending join message for room {}", room);
     ws_write.send(tokio_tungstenite::tungstenite::Message::Text(
         Utf8Bytes::from(serde_json::to_string(&join)?),
     )).await?;
@@ -179,8 +182,14 @@ where
     while let Some(msg) = ws_read.next().await {
         let msg = msg?;
         if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
+            println!("Quick: Received websocket text while negotiating role: {}", text);
             let parsed: WireMessage = serde_json::from_str(&text)?;
             if let WireMessage::Joined { is_initiator, .. } = parsed {
+                println!(
+                    "Quick: Joined room {} as {}",
+                    room,
+                    if is_initiator { "Initiator" } else { "Responder" }
+                );
                 return Ok(if is_initiator {
                     SignalingRole::Initiator
                 } else {
@@ -212,9 +221,12 @@ where
     println!("Quick: Entering background connection loop");
     // Initialize the UDP socket for media transmission
     let socket = bind_local_socket().await?;
+    println!("Quick: Bound local UDP socket at {}", socket.local_addr()?);
 
     // Prepare local tracks and candidates before starting the loop
+    println!("Quick: Initializing local media tracks (audio + video sendrecv)");
     initialize_local_media(&core).await.map_err(QuickError::Protocol)?;
+    println!("Quick: Local media tracks initialized, creating local ICE candidate");
     add_local_candidate(&core, &socket, &ws_tx, &ws_url).map_err(QuickError::Protocol)?;
 
     let mut timeout = Instant::now() + Duration::from_millis(100);
@@ -227,6 +239,7 @@ where
 
             // Handle outgoing signaling messages from the core to the WebSocket
             Some(wire) = ws_rx.recv() => {
+                println!("Quick: Sending websocket signaling message: {:?}", wire);
                 ws_write.send(tokio_tungstenite::tungstenite::Message::Text(
                     Utf8Bytes::from(serde_json::to_string(&wire).unwrap_or_default()),
                 )).await?;
@@ -236,10 +249,13 @@ where
             Some(ws_msg) = ws_read.next() => {
                 let ws_msg = ws_msg?;
                 if let tokio_tungstenite::tungstenite::Message::Text(text) = ws_msg {
+                    println!("Quick: Incoming websocket signaling text: {}", text);
                     if let Ok(parsed) = serde_json::from_str::<WireMessage>(&text) {
                         if let Err(err) = dispatch_websocket_message_to_core(&core, parsed, &ws_tx).await {
                             core.lock().await.signaling_handler.set_error(err);
                         }
+                    } else {
+                        println!("Quick: Failed to parse websocket signaling message");
                     }
                 }
             }
@@ -248,16 +264,26 @@ where
             Ok((n, source)) = socket.recv_from(&mut udp_buf) => {
                 let destination = socket.local_addr()?;
                 let contents = &udp_buf[..n];
+                println!(
+                    "Quick: Received UDP packet from {} to {} ({} bytes)",
+                    source,
+                    destination,
+                    n
+                );
 
                 // Feed the raw bytes into the str0m engine
                 if let Ok(receive) = str0m::net::Receive::new(str0m::net::Protocol::Udp, source, destination, contents) {
                     let input = str0m::Input::Receive(Instant::now(), receive);
+                    println!("Quick: Forwarding UDP packet into str0m input pipeline");
                     let _ = core.lock().await.handle_input(input);
+                } else {
+                    println!("Quick: Failed to parse UDP packet into str0m receive frame");
                 }
             }
 
             // Drive the internal clock of the WebRTC engine
             _ = tokio::time::sleep_until(tokio::time::Instant::from_std(timeout)) => {
+                println!("Quick: Firing str0m timeout input");
                 let _ = core.lock().await.handle_input(str0m::Input::Timeout(Instant::now()));
             }
         }
@@ -271,7 +297,9 @@ where
 
 async fn initialize_local_media(core: &std::sync::Arc<Mutex<RAMSCore>>) -> Result<(), String> {
     let mut core = core.lock().await;
+    println!("Quick: Adding audio SendRecv media line");
     core.add_audio(Direction::SendRecv);
+    println!("Quick: Adding video SendRecv media line");
     core.add_video(Direction::SendRecv);
     Ok(())
 }
@@ -283,6 +311,7 @@ fn add_local_candidate(
     ws_url: &str,
 ) -> Result<(), String> {
     let mut addr = socket.local_addr().map_err(|e| e.to_string())?;
+    println!("Quick: Local UDP candidate base address before IP patch: {}", addr);
     if addr.ip().is_unspecified() {
         if let Some(local_ip) = get_local_ip(ws_url) {
             println!("Quick: Discovered local IP: {}", local_ip);
@@ -293,9 +322,13 @@ fn add_local_candidate(
         }
     }
     let candidate = str0m::Candidate::host(addr, "udp").map_err(|e| e.to_string())?;
+    println!("Quick: Created local ICE candidate object: {:?}", candidate);
 
     if let Ok(mut guard) = core.try_lock() {
         let _ = guard.rtc.add_local_candidate(candidate.clone());
+        println!("Quick: Added local ICE candidate into str0m RTC");
+    } else {
+        println!("Quick: Could not lock RTC to add local ICE candidate immediately");
     }
 
     println!("Quick: Sending local ICE candidate: {}", candidate.to_sdp_string());
@@ -315,10 +348,15 @@ async fn dispatch_websocket_message_to_core(
     match msg {
         WireMessage::PeerJoined => {
             // When a peer joins, the Initiator kicks off the negotiation by creating an offer.
+            println!("Quick: PeerJoined received");
             let mut core = core.lock().await;
             if core.signaling_handler.role == SignalingRole::Initiator {
+                println!("Quick: Initiator creating offer due to peer join");
                 let offer = core.create_offer()?;
+                println!("Quick: Sending SDP offer: {:?}", offer);
                 let _ = ws_tx.send(offer.into());
+            } else {
+                println!("Quick: PeerJoined ignored because this side is not initiator");
             }
             Ok(())
         }
@@ -330,7 +368,11 @@ async fn dispatch_websocket_message_to_core(
                 if let Some(response) = core.handle_signaling(signaling)? {
                     println!("Quick: Sending signaling response: {:?}", response);
                     let _ = ws_tx.send(response.into());
+                } else {
+                    println!("Quick: Signal consumed without immediate response");
                 }
+            } else {
+                println!("Quick: Ignored non-signaling websocket message");
             }
             Ok(())
         }
@@ -351,17 +393,26 @@ async fn flush_core_outputs_to_network(
     loop {
         let output = match core.lock().await.poll_output() {
             Ok(output) => output,
-            Err(_) => break,
+            Err(err) => {
+                println!("Quick: poll_output failed: {:?}", err);
+                break;
+            }
         };
 
         match output {
             str0m::Output::Timeout(t) => {
                 // The engine tells us when it needs to be woken up next.
+                println!("Quick: str0m requested timeout at {:?}", t);
                 next_timeout = t;
                 break;
             }
             str0m::Output::Transmit(transmit) => {
                 // Send encrypted WebRTC data (RTP/RTCP/DTLS) over the UDP socket.
+                println!(
+                    "Quick: str0m transmit -> {} bytes to {}",
+                    transmit.contents.len(),
+                    transmit.destination
+                );
                 let _ = socket.send_to(&transmit.contents, transmit.destination).await;
             }
             str0m::Output::Event(event) => {
@@ -377,10 +428,24 @@ async fn flush_core_outputs_to_network(
                     }
                     str0m::Event::MediaData(data) => {
                         // Route incoming str0m MediaData events with raw bytes
+                        println!(
+                            "Quick: MediaData event mid={:?}, bytes={}, contiguous={}",
+                            data.mid,
+                            data.data.len(),
+                            data.contiguous
+                        );
                         let _ = event_tx.send(QuickEvent::MediaData(data.mid, data.data.clone()));
                     }
-                    _ => {
-                        // println!("Quick: Other str0m Event: {:?}", event);
+                    str0m::Event::MediaAdded(media_added) => {
+                        println!(
+                            "Quick: MediaAdded mid={:?}, kind={:?}, direction={:?}",
+                            media_added.mid,
+                            media_added.kind,
+                            media_added.direction
+                        );
+                    }
+                    other => {
+                        println!("Quick: Other str0m event: {:?}", other);
                     }
                 }
             }
