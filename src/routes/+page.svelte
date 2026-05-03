@@ -172,13 +172,116 @@
       let videoTimestamp = 0;
       let decoderCrashCount = 0;
 
+      // ---- H.264 UTILITIES ----
+      const NAL_TYPE_NAMES: Record<number, string> = {
+        1: 'NON_IDR_SLICE', 5: 'IDR_SLICE', 6: 'SEI',
+        7: 'SPS', 8: 'PPS', 9: 'AUD', 0: 'UNSPECIFIED'
+      };
+
+      /** Return the NAL unit type (5 LSBs of first byte after start code) */
+      function nalType(b: number): number { return b & 0x1f; }
+      function nalName(t: number): string { return NAL_TYPE_NAMES[t] ?? `UNKNOWN(${t})`; }
+
+      /** Parse SPS and PPS from an AVCDecoderConfigurationRecord (the 'description' field). */
+      function parseSPSPPS(desc: ArrayBuffer): { sps: Uint8Array[], pps: Uint8Array[] } {
+        const d = new Uint8Array(desc);
+        const sps: Uint8Array[] = [];
+        const pps: Uint8Array[] = [];
+        if (d.length < 7) { log(`[H264] description too short: ${d.length} bytes`); return { sps, pps }; }
+        // AVCDecoderConfigurationRecord layout:
+        // byte 0: configurationVersion (always 1)
+        // byte 5 lower 5 bits: numSPS
+        let offset = 5;
+        const numSPS = d[offset] & 0x1f; offset++;
+        for (let i = 0; i < numSPS; i++) {
+          const len = (d[offset] << 8) | d[offset + 1]; offset += 2;
+          sps.push(d.slice(offset, offset + len)); offset += len;
+        }
+        const numPPS = d[offset]; offset++;
+        for (let i = 0; i < numPPS; i++) {
+          const len = (d[offset] << 8) | d[offset + 1]; offset += 2;
+          pps.push(d.slice(offset, offset + len)); offset += len;
+        }
+        log(`[H264] Parsed description: ${numSPS} SPS (${sps.map(s=>s.length+'B').join(',')}), ${numPPS} PPS (${pps.map(p=>p.length+'B').join(',')})`);
+        return { sps, pps };
+      }
+
+      /** Convert AVCC (length-prefixed NALUs) to Annex-B (start-code-prefixed).
+       *  Optionally prepend SPS/PPS before the first NALU. */
+      function avccToAnnexB(avcc: Uint8Array, prependNals?: Uint8Array[]): Uint8Array {
+        const startCode = new Uint8Array([0, 0, 0, 1]);
+        const parts: Uint8Array[] = [];
+
+        // Prepend SPS/PPS if provided
+        if (prependNals) {
+          for (const nal of prependNals) {
+            parts.push(startCode);
+            parts.push(nal);
+          }
+        }
+
+        // Walk the AVCC buffer: [4-byte length][NALU data] ...
+        let pos = 0;
+        let naluCount = 0;
+        while (pos + 4 <= avcc.length) {
+          const naluLen = (avcc[pos] << 24) | (avcc[pos+1] << 16) | (avcc[pos+2] << 8) | avcc[pos+3];
+          pos += 4;
+          if (naluLen <= 0 || pos + naluLen > avcc.length) {
+            log(`[H264] AVCC parse error at pos ${pos-4}: naluLen=${naluLen}, remaining=${avcc.length - pos}`);
+            break;
+          }
+          const nt = nalType(avcc[pos]);
+          if (naluCount < 5 || nt === 5 || nt === 7 || nt === 8) {
+            // Log first few NALUs and all keyframe/SPS/PPS
+          }
+          naluCount++;
+          parts.push(startCode);
+          parts.push(avcc.slice(pos, pos + naluLen));
+          pos += naluLen;
+        }
+
+        // Concatenate all parts
+        const totalLen = parts.reduce((sum, p) => sum + p.length, 0);
+        const result = new Uint8Array(totalLen);
+        let offset = 0;
+        for (const p of parts) { result.set(p, offset); offset += p.length; }
+        return result;
+      }
+
+      /** Detect if a buffer starts with Annex-B start codes */
+      function isAnnexB(data: Uint8Array): boolean {
+        return (data[0] === 0 && data[1] === 0 && data[2] === 0 && data[3] === 1) ||
+               (data[0] === 0 && data[1] === 0 && data[2] === 1);
+      }
+
+      /** List NAL unit types in an Annex-B stream */
+      function listAnnexBNalTypes(data: Uint8Array): string[] {
+        const types: string[] = [];
+        for (let i = 0; i < data.length - 4; i++) {
+          if (data[i] === 0 && data[i+1] === 0 && data[i+2] === 0 && data[i+3] === 1) {
+            types.push(nalName(nalType(data[i+4])));
+          }
+        }
+        return types;
+      }
+
+      /** Detect if an Annex-B stream contains an IDR (keyframe) */
+      function containsIDR(data: Uint8Array): boolean {
+        for (let i = 0; i < data.length - 4; i++) {
+          if (data[i] === 0 && data[i+1] === 0 && data[i+2] === 0 && data[i+3] === 1) {
+            if (nalType(data[i+4]) === 5) return true;
+          }
+        }
+        return false;
+      }
+
       function createVideoDecoder() {
         waitingForKeyframe = true;
         videoDecoder = new (window as any).VideoDecoder({
           output: (frame: any) => {
             remoteFrameCount++;
             if (remoteFrameCount === 1 || remoteFrameCount % 100 === 0) {
-              log(`[DEC] Decoded frame #${remoteFrameCount} (${frame.displayWidth}x${frame.displayHeight})`);
+              log(`[DEC] ✓ Decoded frame #${remoteFrameCount} (${frame.displayWidth}x${frame.displayHeight})`);
             }
             if (remoteCtx) {
               remoteCtx.drawImage(frame, 0, 0, remoteCanvas.width, remoteCanvas.height);
@@ -187,13 +290,11 @@
           },
           error: (e: any) => {
             decoderCrashCount++;
-            if (decoderCrashCount <= 5) {
-              log(`[ERR] VideoDecoder FATAL #${decoderCrashCount}: ${e.message}`);
-            }
+            log(`[ERR] VideoDecoder error #${decoderCrashCount}: name=${e.name}, message="${e.message}", state=${videoDecoder?.state}`);
             if (decoderCrashCount < 20) {
               setTimeout(() => createVideoDecoder(), 100);
             } else if (decoderCrashCount === 20) {
-              log('[ERR] VideoDecoder has crashed 20 times. Giving up on H.264 decoding.');
+              log('[ERR] VideoDecoder has crashed 20 times. Giving up.');
             }
           }
         });
@@ -201,56 +302,84 @@
           codec: 'avc1.42001f', // Constrained Baseline Profile, Level 3.1
           hardwareAcceleration: 'prefer-hardware'
         });
+        log(`[DEC] VideoDecoder created, state=${videoDecoder.state}`);
       }
       createVideoDecoder();
 
-      // === SELF-TEST: Verify H.264 decode works at all in this browser ===
+      // === SELF-TEST: Verify H.264 encode→decode roundtrip ===
       try {
         const testCanvas = document.createElement('canvas');
         testCanvas.width = 64;
         testCanvas.height = 64;
         const tctx = testCanvas.getContext('2d')!;
-        const grad = tctx.createLinearGradient(0, 0, 64, 64);
-        grad.addColorStop(0, 'blue');
-        grad.addColorStop(1, 'green');
-        tctx.fillStyle = grad;
+        tctx.fillStyle = 'blue';
         tctx.fillRect(0, 0, 64, 64);
 
         const testFrame = new (window as any).VideoFrame(testCanvas, { timestamp: 0 });
         
         let selfTestDecoded = false;
+        let selfTestDecoderDesc: BufferSource | null = null;
+
         const testDecoder = new (window as any).VideoDecoder({
           output: (frame: any) => {
             selfTestDecoded = true;
-            log(`[SELF-TEST] ✓ H.264 decode WORKS! Got ${frame.displayWidth}x${frame.displayHeight} frame.`);
+            log(`[SELF-TEST] ✓ H.264 roundtrip WORKS! Got ${frame.displayWidth}x${frame.displayHeight} frame.`);
             frame.close();
           },
           error: (e: any) => {
-            log(`[SELF-TEST] ✗ H.264 decode FAILED: ${e.message}`);
+            log(`[SELF-TEST] ✗ Decode FAILED: name=${e.name}, message="${e.message}"`);
           }
         });
-        // Try both hardware and software for self-test to be sure
-        testDecoder.configure({ codec: 'avc1.42001f', hardwareAcceleration: 'prefer-hardware' });
 
         const testEncoder = new (window as any).VideoEncoder({
-          output: (chunk: any) => {
-            // Encoder outputs Annex-B natively (start codes included)
-            const buf = new Uint8Array(chunk.byteLength);
-            chunk.copyTo(buf);
+          output: (chunk: any, metadata: any) => {
+            const raw = new Uint8Array(chunk.byteLength);
+            chunk.copyTo(raw);
+            const head = Array.from(raw.slice(0, 20)).map((b: number) => b.toString(16).padStart(2, '0')).join(' ');
+            log(`[SELF-TEST] Encoder output: ${chunk.type}, ${raw.length} bytes, hex=[${head}]`);
+
+            // Check if WebKitGTK gave us AVCC or Annex-B
+            const gotAnnexB = isAnnexB(raw);
+            log(`[SELF-TEST] Format: ${gotAnnexB ? 'Annex-B' : 'AVCC (length-prefixed)'}`);
+
+            // Extract decoderConfig description if present
+            const desc = metadata?.decoderConfig?.description;
+            if (desc) {
+              const descBytes = new Uint8Array(desc instanceof ArrayBuffer ? desc : desc.buffer || desc);
+              log(`[SELF-TEST] Got decoderConfig.description: ${descBytes.length} bytes`);
+              selfTestDecoderDesc = desc;
+            }
+
+            let annexBData: Uint8Array;
+            if (gotAnnexB) {
+              annexBData = raw;
+            } else {
+              // Convert AVCC → Annex-B, prepend SPS/PPS from description
+              let prependNals: Uint8Array[] | undefined;
+              if (selfTestDecoderDesc && chunk.type === 'key') {
+                const { sps, pps } = parseSPSPPS(selfTestDecoderDesc instanceof ArrayBuffer ? selfTestDecoderDesc : (selfTestDecoderDesc as any).buffer || selfTestDecoderDesc);
+                prependNals = [...sps, ...pps];
+              }
+              annexBData = avccToAnnexB(raw, prependNals);
+            }
+
+            const nalTypes = listAnnexBNalTypes(annexBData);
+            log(`[SELF-TEST] NAL units in converted stream: [${nalTypes.join(', ')}]`);
 
             try {
+              testDecoder.configure({ codec: 'avc1.42001f', hardwareAcceleration: 'prefer-hardware' });
               testDecoder.decode(new (window as any).EncodedVideoChunk({
                 type: chunk.type,
                 timestamp: chunk.timestamp,
-                data: buf
+                data: annexBData
               }));
             } catch (e: any) {
-              log(`[SELF-TEST] Decode call threw: ${e.name}: ${e.message}`);
+              log(`[SELF-TEST] Decode threw: ${e.name}: ${e.message}`);
             }
           },
-          error: (e: any) => log(`[SELF-TEST] Encode error: ${e}`)
+          error: (e: any) => log(`[SELF-TEST] Encode error: name=${e.name}, message="${e.message}"`)
         });
-        testEncoder.configure({ codec: 'avc1.42001f', width: 64, height: 64, bitrate: 500_000, latencyMode: 'realtime', avc: { format: 'annexb' } });
+        testEncoder.configure({ codec: 'avc1.42001f', width: 64, height: 64, bitrate: 500_000, latencyMode: 'realtime' });
         testEncoder.encode(testFrame, { keyFrame: true });
         testFrame.close();
         
@@ -258,13 +387,13 @@
         await testDecoder.flush();
         
         if (!selfTestDecoded) {
-          log('[SELF-TEST] ✗ No H.264 decoded frame received after flush.');
+          log('[SELF-TEST] ✗ No decoded frame received after flush.');
         }
         
         testEncoder.close();
         testDecoder.close();
       } catch (e: any) {
-        log(`[SELF-TEST] Failed to run: ${e.name}: ${e.message}`);
+        log(`[SELF-TEST] Exception: ${e.name}: ${e.message}`);
       }
 
       if (!audioCtx) {
@@ -307,35 +436,41 @@
 
         if (kind === 'video') {
           rxVideoChunks++;
-
-          // H.264 doesn't have a simple 1-byte keyframe flag like VP8.
-          // However, since we are controlling the encoder, we can rely on 
-          // the fact that we're sending frames as we receive them.
-          // For now, let's assume the first frame we get is a keyframe (or wait for one)
           
-          if (rxVideoChunks === 1) {
-            const head = Array.from(uint8.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ');
-            log(`[PROBE] First H.264 frame: ${uint8.length} bytes. Hex: [${head}]`);
+          if (rxVideoChunks <= 3) {
+            const head = Array.from(uint8.slice(0, 24)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+            const format = isAnnexB(uint8) ? 'Annex-B' : 'AVCC';
+            const nalTypes = isAnnexB(uint8) ? listAnnexBNalTypes(uint8) : ['(AVCC - not parsed)'];
+            log(`[RX #${rxVideoChunks}] ${uint8.length} bytes, format=${format}, NALs=[${nalTypes.join(', ')}], hex=[${head}]`);
           }
 
+          // The sender converts to Annex-B and prepends SPS/PPS on keyframes.
+          // Detect IDR (keyframe) from NAL type 5.
+          const isIDR = containsIDR(uint8);
+          
           if (waitingForKeyframe) {
-            waitingForKeyframe = false; 
-            log(`[SYS] H.264 data arrived (${uint8.length} bytes). Starting decode...`);
+            if (!isIDR) {
+              if (rxVideoChunks <= 5) log(`[RX] Skipping non-IDR frame while waiting for keyframe (frame #${rxVideoChunks})`);
+              return; // Don't decode until we get an IDR
+            }
+            waitingForKeyframe = false;
+            const nalTypes = listAnnexBNalTypes(uint8);
+            log(`[RX] ✓ Got IDR keyframe at frame #${rxVideoChunks}, NALs=[${nalTypes.join(', ')}], ${uint8.length} bytes`);
           }
 
           try {
             if (videoDecoder && videoDecoder.state === 'configured') {
-              videoTimestamp += 33333; 
-
-              // Data arrives as Annex-B (start codes already present from encoder)
+              videoTimestamp += 33333;
               videoDecoder.decode(new (window as any).EncodedVideoChunk({
-                type: 'key', // Force keyframe type for now
+                type: isIDR ? 'key' : 'delta',
                 timestamp: videoTimestamp,
                 data: uint8
               }));
+            } else {
+              if (rxVideoChunks % 100 === 0) log(`[WARN] Decoder not ready: state=${videoDecoder?.state}`);
             }
           } catch (e: any) {
-            log(`[ERR] H.264 Decode threw: ${e.name}: ${e.message}`);
+            log(`[ERR] Decode threw: ${e.name}: "${e.message}", dataLen=${uint8.length}, isIDR=${isIDR}`);
           }
         } else if (kind === 'audio') {
           rxAudioChunks++;
@@ -408,18 +543,50 @@
       localCanvas.height = 480;
       const localCtx = localCanvas.getContext('2d');
       
+      // Cached SPS/PPS NALUs extracted from encoder metadata (for prepending to keyframes)
+      let encoderSPS: Uint8Array[] = [];
+      let encoderPPS: Uint8Array[] = [];
+      let txFrameCount = 0;
+
       const videoEncoder = new (window as any).VideoEncoder({
-        output: (chunk: any) => {
+        output: (chunk: any, metadata: any) => {
           if (connectionState === 'CONNECTED') {
-            // Encoder outputs Annex-B natively (start codes included)
-            const data = new Uint8Array(chunk.byteLength);
-            chunk.copyTo(data);
-            
-            if (Math.random() < 0.01) log(`[TX] Sending ${data.length} byte H.264 frame`);
-            invoke('send_video_chunk', { data: Array.from(data) });
+            const raw = new Uint8Array(chunk.byteLength);
+            chunk.copyTo(raw);
+
+            // Extract SPS/PPS from metadata when available (usually on first keyframe)
+            const desc = metadata?.decoderConfig?.description;
+            if (desc) {
+              const descBuf = desc instanceof ArrayBuffer ? desc : (desc.buffer || desc);
+              const parsed = parseSPSPPS(descBuf);
+              encoderSPS = parsed.sps;
+              encoderPPS = parsed.pps;
+              log(`[TX] Captured SPS/PPS from encoder metadata`);
+            }
+
+            // Convert AVCC → Annex-B, prepend SPS/PPS on keyframes
+            const gotAnnexB = isAnnexB(raw);
+            let annexBData: Uint8Array;
+            if (gotAnnexB) {
+              // Already Annex-B (unlikely on WebKitGTK but handle it)
+              annexBData = raw;
+            } else {
+              const prependNals = (chunk.type === 'key' && encoderSPS.length > 0)
+                ? [...encoderSPS, ...encoderPPS]
+                : undefined;
+              annexBData = avccToAnnexB(raw, prependNals);
+            }
+
+            txFrameCount++;
+            if (txFrameCount <= 3 || txFrameCount % 300 === 0) {
+              const nalTypes = listAnnexBNalTypes(annexBData);
+              log(`[TX #${txFrameCount}] ${chunk.type} frame, ${raw.length}→${annexBData.length} bytes (${gotAnnexB ? 'annexb' : 'avcc→annexb'}), NALs=[${nalTypes.join(', ')}]`);
+            }
+
+            invoke('send_video_chunk', { data: Array.from(annexBData) });
           }
         },
-        error: (e: any) => log(`[ERR] VideoEncoder: ${e}`)
+        error: (e: any) => log(`[ERR] VideoEncoder: name=${e.name}, message="${e.message}"`)
       });
       try {
         videoEncoder.configure({ 
@@ -427,8 +594,7 @@
           width: 640, 
           height: 480, 
           bitrate: 1_000_000,
-          latencyMode: 'realtime',
-          avc: { format: 'annexb' }
+          latencyMode: 'realtime'
         });
         log('[OK] VideoEncoder configured for H.264 Constrained Baseline');
       } catch (e) {
