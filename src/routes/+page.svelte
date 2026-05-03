@@ -164,6 +164,7 @@
       let remoteFrameCount = 0;
       let waitingForKeyframe = true;
       let videoTimestamp = 0;
+      let decoderCrashCount = 0;
 
       function createVideoDecoder() {
         waitingForKeyframe = true;
@@ -179,17 +180,83 @@
             frame.close();
           },
           error: (e: any) => {
-            log(`[ERR] VideoDecoder FATAL: ${e.message}.`);
-            createVideoDecoder(); 
+            decoderCrashCount++;
+            if (decoderCrashCount <= 5) {
+              log(`[ERR] VideoDecoder FATAL #${decoderCrashCount}: ${e.message}`);
+            }
+            if (decoderCrashCount < 20) {
+              setTimeout(() => createVideoDecoder(), 100);
+            } else if (decoderCrashCount === 20) {
+              log('[ERR] VideoDecoder has crashed 20 times. Giving up on VP8 decoding.');
+            }
           }
         });
         videoDecoder.configure({ 
           codec: 'vp8',
-          width: 640,
-          height: 480
+          hardwareAcceleration: 'prefer-software'
         });
       }
       createVideoDecoder();
+
+      // === SELF-TEST: Verify VP8 decode works at all in this browser ===
+      try {
+        const testCanvas = document.createElement('canvas');
+        testCanvas.width = 64;
+        testCanvas.height = 64;
+        const tctx = testCanvas.getContext('2d')!;
+        tctx.fillStyle = 'red';
+        tctx.fillRect(0, 0, 64, 64);
+
+        const testFrame = new (window as any).VideoFrame(testCanvas, { timestamp: 0 });
+        
+        let selfTestDecoded = false;
+        const testDecoder = new (window as any).VideoDecoder({
+          output: (frame: any) => {
+            selfTestDecoded = true;
+            log(`[SELF-TEST] ✓ VP8 decode WORKS! Got ${frame.displayWidth}x${frame.displayHeight} frame.`);
+            frame.close();
+          },
+          error: (e: any) => {
+            log(`[SELF-TEST] ✗ VP8 decode FAILED: ${e.message}`);
+            log('[SELF-TEST] WebKitGTK VP8 WebCodecs decoding is broken. Need alternative approach.');
+          }
+        });
+        testDecoder.configure({ codec: 'vp8', hardwareAcceleration: 'prefer-software' });
+
+        const testEncoder = new (window as any).VideoEncoder({
+          output: (chunk: any) => {
+            const buf = new Uint8Array(chunk.byteLength);
+            chunk.copyTo(buf);
+            const head = Array.from(buf.slice(0, 10)).map((b: number) => b.toString(16).padStart(2, '0')).join(' ');
+            log(`[SELF-TEST] Encoded ${buf.length} byte VP8 chunk. Head: [${head}]`);
+            try {
+              testDecoder.decode(new (window as any).EncodedVideoChunk({
+                type: chunk.type,
+                timestamp: chunk.timestamp,
+                data: buf
+              }));
+            } catch (e: any) {
+              log(`[SELF-TEST] Decode call threw: ${e.name}: ${e.message}`);
+            }
+          },
+          error: (e: any) => log(`[SELF-TEST] Encode error: ${e}`)
+        });
+        testEncoder.configure({ codec: 'vp8', width: 64, height: 64, bitrate: 500_000 });
+        testEncoder.encode(testFrame, { keyFrame: true });
+        testFrame.close();
+        
+        await testEncoder.flush();
+        await testDecoder.flush();
+        
+        if (!selfTestDecoded) {
+          log('[SELF-TEST] ✗ No decoded frame received after flush. VP8 WebCodecs may be broken.');
+        }
+        
+        testEncoder.close();
+        testDecoder.close();
+      } catch (e: any) {
+        log(`[SELF-TEST] Failed to run: ${e.name}: ${e.message}`);
+      }
 
       if (!audioCtx) {
         audioCtx = new window.AudioContext({ sampleRate: 48000 });
