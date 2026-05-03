@@ -221,34 +221,50 @@
         const uint8 = new Uint8Array(data);
         if (uint8.length === 0) return;
 
+      function parseVp8Descriptor(uint8: Uint8Array) {
+        let offset = 1;
+        const x = (uint8[0] & 0x80) !== 0; // Extension
+        if (x) {
+          const x2 = uint8[1];
+          offset++;
+          const i = (x2 & 0x80) !== 0; // PictureID
+          const l = (x2 & 0x40) !== 0; // TL0PICIDX
+          const t = (x2 & 0x20) !== 0; // TID
+          const k = (x2 & 0x10) !== 0; // KEYIDX
+          
+          if (i) {
+            if ((uint8[offset] & 0x80) !== 0) offset += 2; // 16-bit PicID
+            else offset += 1; // 7-bit PicID
+          }
+          if (l) offset += 1;
+          if (t || k) offset += 1;
+        }
+        return offset;
+      }
+
+      await listen('webrtc-media-data', (event) => {
+        const [kind, data] = event.payload as [string, number[]];
+        const uint8 = new Uint8Array(data);
+        if (uint8.length === 0) return;
+
         if (kind === 'video') {
           rxVideoChunks++;
           
-          // DYNAMIC BITSTREAM ALIGNMENT
-          if (videoOffset === -1) { 
-            for (let i = 3; i < 20; i++) {
-              if (uint8[i] === 0x9d && uint8[i+1] === 0x01 && uint8[i+2] === 0x2a) {
-                videoOffset = i - 3; // Signature is at bytes 3,4,5 of a keyframe
-                log(`[SYS] Bitstream Lock: Found VP8 signature. Offset: ${videoOffset}`);
-                break;
-              }
-            }
-          }
-          
-          if (videoOffset === -1) return; 
+          const offset = parseVp8Descriptor(uint8);
+          if (offset >= uint8.length) return;
 
-          const bitstream = uint8.slice(videoOffset);
+          const bitstream = uint8.slice(offset);
           const isKeyframe = (bitstream[0] & 0x01) === 0;
 
           if (waitingForKeyframe) {
             if (!isKeyframe) return; 
             waitingForKeyframe = false;
-            log('[SYS] Keyframe arrived. Resuming...');
+            log(`[SYS] Keyframe arrived (size: ${bitstream.length}). Resuming...`);
           }
 
           try {
             if (videoDecoder && videoDecoder.state === 'configured') {
-              videoTimestamp += 33333; // Steady 30fps increments
+              videoTimestamp += 33333; 
               videoDecoder.decode(new (window as any).EncodedVideoChunk({
                 type: isKeyframe ? 'key' : 'delta',
                 timestamp: videoTimestamp,
@@ -256,7 +272,9 @@
               }));
             }
           } catch (e) {
-            log(`[ERR] Decode call failed: ${e}`);
+            const head = Array.from(bitstream.slice(0, 10)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+            log(`[ERR] Decode failed (${isKeyframe ? 'KEY' : 'DELTA'}): ${e}`);
+            log(`[ERR] Bitstream head: [${head}]`);
             if (e.toString().includes('Key frame is required')) waitingForKeyframe = true;
           }
         } else if (kind === 'audio') {
