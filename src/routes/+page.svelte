@@ -22,11 +22,6 @@
   let audioCtx: AudioContext | null = null;
   let visualizerFrameId: number;
 
-  // Video transmission states
-  let mediaRecorder: MediaRecorder | null = null;
-  let sourceBuffer: SourceBuffer | null = null;
-  let mediaSource: MediaSource | null = null;
-
   function log(msg: string) {
     logs = [...logs, msg];
   }
@@ -121,59 +116,78 @@
       listen('webrtc-connected', (event) => {
         connectionState = 'CONNECTED';
         log(`[RUST] Connected: ${event.payload}`);
-        try {
-          mediaRecorder?.start(100);
-          log('[OK] MediaRecorder started at 100ms chunks.');
-
-          if (remoteVideoRef && localStream) {
-            setupVisualizers(localStream, remoteVideoRef);
-          }
-        } catch (err) {
-          log(`[ERR] Post-connection setup failed: ${err}`);
-        }
       });
 
-      listen('webrtc-ice-state', (event) => {
-        log(`[ICE] State: ${event.payload}`);
+      // --- WEBCODECS DECODING SETUP ---
+      const remoteCanvas = document.createElement('canvas');
+      remoteCanvas.width = 640;
+      remoteCanvas.height = 480;
+      const remoteCtx = remoteCanvas.getContext('2d');
+      if (remoteVideoRef) {
+        // Feed decoded frames to the remote video element
+        remoteVideoRef.srcObject = remoteCanvas.captureStream(30);
+      }
+
+      const videoDecoder = new (window as any).VideoDecoder({
+        output: (frame: any) => {
+          if (remoteCtx) remoteCtx.drawImage(frame, 0, 0, remoteCanvas.width, remoteCanvas.height);
+          frame.close();
+        },
+        error: (e: any) => log(`[ERR] VideoDecoder: ${e}`)
       });
+      videoDecoder.configure({ codec: 'vp8' });
 
-      const remoteQueue: Uint8Array[] = [];
-      let isProcessingQueue = false;
+      audioCtx = new window.AudioContext();
+      const audioDecoder = new (window as any).AudioDecoder({
+        output: (audioData: any) => {
+          if (!audioCtx) return;
+          const buffer = audioCtx.createBuffer(1, audioData.numberOfFrames, audioData.sampleRate);
+          const channelData = new Float32Array(audioData.numberOfFrames);
+          audioData.copyTo(channelData, { planeIndex: 0 });
+          buffer.copyToChannel(channelData, 0);
 
-      const processQueue = async () => {
-        if (isProcessingQueue || !sourceBuffer || sourceBuffer.updating || remoteQueue.length === 0) return;
-        
-        isProcessingQueue = true;
-        try {
-          const chunk = remoteQueue.shift();
-          if (chunk) {
-            log(`[MEDIA] Appending remote chunk (${chunk.length} bytes)`);
-            sourceBuffer.appendBuffer(chunk);
-          }
-        } catch (err) {
-          log(`[ERR] SourceBuffer append failed: ${err}`);
-        } finally {
-          isProcessingQueue = false;
-        }
-      };
+          const source = audioCtx.createBufferSource();
+          source.buffer = buffer;
+          source.connect(audioCtx.destination);
+          source.start();
+          audioData.close();
+        },
+        error: (e: any) => log(`[ERR] AudioDecoder: ${e}`)
+      });
+      audioDecoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1 });
 
       listen('webrtc-media-data', (event) => {
-        const [mid, data] = event.payload as [string, number[]];
+        const [kind, data] = event.payload as [string, number[]];
         const uint8 = new Uint8Array(data);
-        log(`[MEDIA] Received media for MID ${mid}, ${uint8.length} bytes`);
-        remoteQueue.push(uint8);
-        processQueue();
+        if (uint8.length === 0) return;
 
-        if (Math.random() < 0.05) {
-          log(`[MEDIA] Incoming media bytes: ${uint8.length}`);
+        if (kind === 'video') {
+          // Basic VP8 keyframe check: first bit of payload descriptor is 0
+          const isKeyframe = (uint8[0] & 0x01) === 0;
+          try {
+            const EncodedVideoChunkCtor = (window as any).EncodedVideoChunk;
+            videoDecoder.decode(new EncodedVideoChunkCtor({
+              type: isKeyframe ? 'key' : 'delta',
+              timestamp: performance.now() * 1000,
+              data: uint8
+            }));
+          } catch (e) {
+            log(`[ERR] Video decode fail: ${e}`);
+          }
+        } else if (kind === 'audio') {
+          try {
+            const EncodedAudioChunkCtor = (window as any).EncodedAudioChunk;
+            audioDecoder.decode(new EncodedAudioChunkCtor({
+              type: 'key',
+              timestamp: performance.now() * 1000,
+              data: uint8
+            }));
+          } catch (e) {
+            log(`[ERR] Audio decode fail: ${e}`);
+          }
         }
       });
-
-      setInterval(() => {
-        if (sourceBuffer && !sourceBuffer.updating && remoteQueue.length > 0) {
-          processQueue();
-        }
-      }, 50);
+      // --------------------------------
 
       // 1. Capture local webcam
       let stream: MediaStream;
@@ -225,60 +239,74 @@
         localVideoRef.srcObject = stream;
       }
       
-      // 2. Setup WebM MediaRecorder to emit chunks
-      const targetMime = 'video/webm; codecs="vp8, opus"';
-      const mimeTypes = [
-        targetMime,
-        'video/webm; codecs="vp8"',
-        'video/webm;codecs=vp8,opus',
-        'video/webm;codecs=vp8,vorbis',
-        'video/webm;codecs=vp8',
-        'video/webm;codecs=vp9',
-        'video/webm',
-      ];
-      const supportedMime = mimeTypes.find(m => MediaRecorder.isTypeSupported(m));
+      // --- WEBCODECS ENCODING SETUP ---
+      const localCanvas = document.createElement('canvas');
+      localCanvas.width = 640;
+      localCanvas.height = 480;
+      const localCtx = localCanvas.getContext('2d');
       
-      if (supportedMime) {
-        log(`[SYS] Using MediaRecorder codec: ${supportedMime}`);
-        mediaRecorder = new MediaRecorder(stream, { 
-          mimeType: supportedMime,
-          videoBitsPerSecond: 1000000 // 1Mbps
-        });
-        log('[SYS] MediaRecorder object created; waiting to start after connected event.');
-        
-        mediaRecorder.ondataavailable = async (e) => {
-          if (e.data.size > 0 && connectionState === 'CONNECTED') {
-            try {
-              log(`[MEDIA] Capturing local chunk of ${e.data.size} bytes`);
-              const buffer = await e.data.arrayBuffer();
-              const uint8 = new Uint8Array(buffer);
-              log(`[MEDIA] Sending local chunk to Rust (${uint8.length} bytes)`);
-              // Send chunk to Rust
-              await invoke('send_video_chunk', { data: Array.from(uint8) });
-            } catch (err) {
-              log(`[ERR] Failed to send local media chunk: ${err}`);
-            }
+      const videoEncoder = new (window as any).VideoEncoder({
+        output: (chunk: any) => {
+          if (connectionState === 'CONNECTED') {
+            const data = new Uint8Array(chunk.byteLength);
+            chunk.copyTo(data);
+            invoke('send_video_chunk', { data: Array.from(data) });
           }
-        };
-      } else {
-        log('[WARN] No supported MediaRecorder codec found.');
-      }
-      
-      // 3. Setup Remote MediaSource for incoming bytes
-      mediaSource = new MediaSource();
-      if (remoteVideoRef) {
-        remoteVideoRef.src = URL.createObjectURL(mediaSource);
-      }
-      mediaSource.onsourceopen = () => {
-        try {
-          log('[MEDIA] MediaSource opened');
-          sourceBuffer = mediaSource!.addSourceBuffer(targetMime);
-          log(`[MEDIA] SourceBuffer created with MIME: ${targetMime}`);
-        } catch (e) {
-          log(`[ERR] MediaSource error: ${e}. Fallback to vp8 only.`);
-          sourceBuffer = mediaSource!.addSourceBuffer('video/webm; codecs="vp8"');
+        },
+        error: (e: any) => log(`[ERR] VideoEncoder: ${e}`)
+      });
+      videoEncoder.configure({ codec: 'vp8', width: 640, height: 480, bitrate: 1_000_000 });
+
+      let frameCount = 0;
+      function encodeVideo() {
+        if (localVideoRef && localVideoRef.readyState >= 2 && localCtx) {
+          localCtx.drawImage(localVideoRef, 0, 0, localCanvas.width, localCanvas.height);
+          const frame = new (window as any).VideoFrame(localCanvas, { timestamp: performance.now() * 1000 });
+          videoEncoder.encode(frame, { keyFrame: (frameCount % 30 === 0) });
+          frame.close();
+          frameCount++;
         }
+        requestAnimationFrame(encodeVideo);
+      }
+      encodeVideo(); // Start grabbing frames
+
+      // Audio Encoding
+      const captureAudioCtx = new window.AudioContext();
+      const audioSource = captureAudioCtx.createMediaStreamSource(stream);
+      // Using ScriptProcessorNode (deprecated but widely supported) to grab PCM data
+      const scriptNode = captureAudioCtx.createScriptProcessor(4096, 1, 1);
+      
+      const audioEncoder = new (window as any).AudioEncoder({
+        output: (chunk: any) => {
+          if (connectionState === 'CONNECTED') {
+            const data = new Uint8Array(chunk.byteLength);
+            chunk.copyTo(data);
+            invoke('send_audio_chunk', { data: Array.from(data) });
+          }
+        },
+        error: (e: any) => log(`[ERR] AudioEncoder: ${e}`)
+      });
+      audioEncoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1, bitrate: 64000 });
+
+      let audioTime = 0;
+      scriptNode.onaudioprocess = (e) => {
+        if (connectionState !== 'CONNECTED') return;
+        const pcm = e.inputBuffer.getChannelData(0);
+        const audioData = new (window as any).AudioData({
+          format: 'f32-planar',
+          sampleRate: 48000,
+          numberOfFrames: pcm.length,
+          numberOfChannels: 1,
+          timestamp: audioTime,
+          data: pcm
+        });
+        audioTime += (pcm.length / 48000) * 1000000;
+        audioEncoder.encode(audioData);
+        audioData.close();
       };
+      audioSource.connect(scriptNode);
+      scriptNode.connect(captureAudioCtx.destination);
+      // --------------------------------
       
       // 4. Listen for incoming remote video
       // We will re-implement this using RTP soon

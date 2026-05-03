@@ -88,6 +88,21 @@ async fn send_video_chunk(
     Ok(())
 }
 
+#[tauri::command]
+async fn send_audio_chunk(
+    data: Vec<u8>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut conn_guard = state.connection.lock().await;
+    if let Some(conn) = conn_guard.as_mut() {
+        let mut core = conn.core.lock().await;
+        if let Some(mid) = core.audio_mid {
+            core.write_audio_media(mid, data)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -124,6 +139,7 @@ pub fn run() {
             start_quick_call,
             close_call,
             send_video_chunk,
+            send_audio_chunk,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

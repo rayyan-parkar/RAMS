@@ -18,7 +18,7 @@ pub enum QuickEvent {
     Connecting(String),
     Connected,
     IceState(String),
-    MediaData(str0m::media::Mid, Vec<u8>),
+    MediaData(String, Vec<u8>),
 }
 
 /// Handle to a running quick connection.
@@ -423,7 +423,11 @@ async fn flush_core_outputs_to_network(
                     }
                     str0m::Event::MediaData(data) => {
                         // Route incoming str0m MediaData events with raw bytes
-                        let _ = event_tx.send(QuickEvent::MediaData(data.mid, data.data.clone()));
+                        let kind_str = match *data.pt {
+                            111 => "audio",
+                            _ => "video"
+                        };
+                        let _ = event_tx.send(QuickEvent::MediaData(kind_str.to_string(), data.data.clone()));
                     }
                     str0m::Event::MediaAdded(media_added) => {
                         println!(

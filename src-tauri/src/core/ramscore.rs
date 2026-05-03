@@ -19,6 +19,8 @@ pub struct RAMSCore {
     pub start_time: Instant,
     /// The Media Information Descriptor (MID) of the video track, it tracks the identifier of the media, the media type, and the direction.
     pub video_mid: Option<Mid>,
+    /// The Media Information Descriptor (MID) of the audio track.
+    pub audio_mid: Option<Mid>,
     /// Pending local audio direction to stage in the next local offer.
     pub pending_audio_direction: Option<Direction>,
     /// Pending local video direction to stage in the next local offer.
@@ -41,6 +43,7 @@ impl RAMSCore {
             pending_offer: None,
             start_time: now,
             video_mid: None,
+            audio_mid: None,
             pending_audio_direction: None,
             pending_video_direction: None,
             last_media_log_time: now,
@@ -95,6 +98,9 @@ impl RAMSCore {
                 if media.kind == str0m::media::MediaKind::Video {
                     self.video_mid = Some(media.mid);
                     println!("RAMSCore: stored video_mid = {:?}", self.video_mid);
+                } else if media.kind == str0m::media::MediaKind::Audio {
+                    self.audio_mid = Some(media.mid);
+                    println!("RAMSCore: stored audio_mid = {:?}", self.audio_mid);
                 }
             }
             str0m::Output::Event(str0m::Event::IceConnectionStateChange(state)) => {
@@ -318,6 +324,19 @@ impl RAMSCore {
         for cand in self.pending_remote_candidates.drain(..) {
             self.rtc.add_remote_candidate(cand);
         }
+    }
+
+    /// Writes raw media bytes (e.g., an Opus frame) to the Audio RTP stream.
+    pub fn write_audio_media(&mut self, mid: Mid, data: Vec<u8>) -> Result<(), String> {
+        let now = Instant::now();
+        let rtp_time = str0m::media::MediaTime::new(
+            (now - self.start_time).as_micros() as u64, 
+            str0m::media::Frequency::MICROS
+        );
+
+        let pt = str0m::media::Pt::new_with_value(111);
+        let writer = self.rtc.writer(mid).ok_or("No audio writer")?;
+        writer.write(pt, now, rtp_time, data).map_err(|e| e.to_string())
     }
 
     /// Writes a media chunk (VP8/WebM) to the specified MID.
