@@ -299,99 +299,105 @@
           }
         });
         videoDecoder.configure({ 
-          codec: 'avc1.42001f', // Constrained Baseline Profile, Level 3.1
-          hardwareAcceleration: 'prefer-hardware'
+          codec: 'avc1.42001f',
+          hardwareAcceleration: 'prefer-software' // prefer-software: use avdec_h264 (ffmpeg) not nvdec
         });
-        log(`[DEC] VideoDecoder created, state=${videoDecoder.state}`);
+        log(`[DEC] VideoDecoder created, state=${videoDecoder.state}, accel=prefer-software`);
       }
       createVideoDecoder();
 
       // === SELF-TEST: Verify H.264 encode→decode roundtrip ===
+      // Tests AVCC+description (native path) and Annex-B (streaming path)
       try {
         const testCanvas = document.createElement('canvas');
-        testCanvas.width = 64;
-        testCanvas.height = 64;
+        testCanvas.width = 160; // use reasonable size, 64x64 can hit encoder edge cases
+        testCanvas.height = 120;
         const tctx = testCanvas.getContext('2d')!;
         tctx.fillStyle = 'blue';
-        tctx.fillRect(0, 0, 64, 64);
+        tctx.fillRect(0, 0, 160, 120);
+        tctx.fillStyle = 'white';
+        tctx.font = '16px sans-serif';
+        tctx.fillText('SELF-TEST', 10, 60);
 
         const testFrame = new (window as any).VideoFrame(testCanvas, { timestamp: 0 });
-        
-        let selfTestDecoded = false;
-        let selfTestDecoderDesc: BufferSource | null = null;
 
-        const testDecoder = new (window as any).VideoDecoder({
-          output: (frame: any) => {
-            selfTestDecoded = true;
-            log(`[SELF-TEST] ✓ H.264 roundtrip WORKS! Got ${frame.displayWidth}x${frame.displayHeight} frame.`);
-            frame.close();
-          },
-          error: (e: any) => {
-            log(`[SELF-TEST] ✗ Decode FAILED: name=${e.name}, message="${e.message}"`);
-          }
-        });
+        // We'll try multiple decode strategies in sequence
+        const strategies = [
+          { name: 'AVCC+desc (software)', accel: 'prefer-software', useAVCC: true },
+          { name: 'AVCC+desc (hardware)', accel: 'prefer-hardware', useAVCC: true },
+          { name: 'Annex-B (software)', accel: 'prefer-software', useAVCC: false },
+          { name: 'Annex-B (hardware)', accel: 'prefer-hardware', useAVCC: false },
+        ];
+
+        // Collect encoded chunks and metadata first
+        let encodedChunks: { type: string, timestamp: number, data: Uint8Array, desc?: ArrayBuffer }[] = [];
 
         const testEncoder = new (window as any).VideoEncoder({
           output: (chunk: any, metadata: any) => {
             const raw = new Uint8Array(chunk.byteLength);
             chunk.copyTo(raw);
-            const head = Array.from(raw.slice(0, 20)).map((b: number) => b.toString(16).padStart(2, '0')).join(' ');
-            log(`[SELF-TEST] Encoder output: ${chunk.type}, ${raw.length} bytes, hex=[${head}]`);
-
-            // Check if WebKitGTK gave us AVCC or Annex-B
-            const gotAnnexB = isAnnexB(raw);
-            log(`[SELF-TEST] Format: ${gotAnnexB ? 'Annex-B' : 'AVCC (length-prefixed)'}`);
-
-            // Extract decoderConfig description if present
             const desc = metadata?.decoderConfig?.description;
-            if (desc) {
-              const descBytes = new Uint8Array(desc instanceof ArrayBuffer ? desc : desc.buffer || desc);
-              log(`[SELF-TEST] Got decoderConfig.description: ${descBytes.length} bytes`);
-              selfTestDecoderDesc = desc;
+            const descBuf = desc ? (desc instanceof ArrayBuffer ? desc : new Uint8Array(desc).buffer) : undefined;
+            const head = Array.from(raw.slice(0, 20)).map((b: number) => b.toString(16).padStart(2, '0')).join(' ');
+            const fmt = isAnnexB(raw) ? 'Annex-B' : 'AVCC';
+            log(`[SELF-TEST] Encoded: ${chunk.type}, ${raw.length}B, fmt=${fmt}, desc=${descBuf ? descBuf.byteLength + 'B' : 'none'}, hex=[${head}]`);
+            if (descBuf) {
+              const descHex = Array.from(new Uint8Array(descBuf).slice(0, 20)).map((b: number) => b.toString(16).padStart(2, '0')).join(' ');
+              log(`[SELF-TEST] Description hex: [${descHex}], lengthSize=${((new Uint8Array(descBuf))[4] & 0x03) + 1}`);
             }
-
-            let annexBData: Uint8Array;
-            if (gotAnnexB) {
-              annexBData = raw;
-            } else {
-              // Convert AVCC → Annex-B, prepend SPS/PPS from description
-              let prependNals: Uint8Array[] | undefined;
-              if (selfTestDecoderDesc && chunk.type === 'key') {
-                const { sps, pps } = parseSPSPPS(selfTestDecoderDesc instanceof ArrayBuffer ? selfTestDecoderDesc : (selfTestDecoderDesc as any).buffer || selfTestDecoderDesc);
-                prependNals = [...sps, ...pps];
-              }
-              annexBData = avccToAnnexB(raw, prependNals);
-            }
-
-            const nalTypes = listAnnexBNalTypes(annexBData);
-            log(`[SELF-TEST] NAL units in converted stream: [${nalTypes.join(', ')}]`);
-
-            try {
-              testDecoder.configure({ codec: 'avc1.42001f', hardwareAcceleration: 'prefer-hardware' });
-              testDecoder.decode(new (window as any).EncodedVideoChunk({
-                type: chunk.type,
-                timestamp: chunk.timestamp,
-                data: annexBData
-              }));
-            } catch (e: any) {
-              log(`[SELF-TEST] Decode threw: ${e.name}: ${e.message}`);
-            }
+            encodedChunks.push({ type: chunk.type, timestamp: chunk.timestamp, data: raw, desc: descBuf });
           },
-          error: (e: any) => log(`[SELF-TEST] Encode error: name=${e.name}, message="${e.message}"`)
+          error: (e: any) => log(`[SELF-TEST] Encode error: ${e.name}: ${e.message}`)
         });
-        testEncoder.configure({ codec: 'avc1.42001f', width: 64, height: 64, bitrate: 500_000, latencyMode: 'realtime' });
+        testEncoder.configure({ codec: 'avc1.42001f', width: 160, height: 120, bitrate: 500_000, latencyMode: 'realtime' });
         testEncoder.encode(testFrame, { keyFrame: true });
         testFrame.close();
-        
         await testEncoder.flush();
-        await testDecoder.flush();
-        
-        if (!selfTestDecoded) {
-          log('[SELF-TEST] ✗ No decoded frame received after flush.');
-        }
-        
         testEncoder.close();
-        testDecoder.close();
+        log(`[SELF-TEST] Encoder produced ${encodedChunks.length} chunk(s)`);
+
+        // Now try each decode strategy
+        for (const strat of strategies) {
+          try {
+            let decoded = false;
+            const dec = new (window as any).VideoDecoder({
+              output: (frame: any) => { decoded = true; frame.close(); },
+              error: (_e: any) => {}
+            });
+
+            for (const chunk of encodedChunks) {
+              let configObj: any = { codec: 'avc1.42001f', hardwareAcceleration: strat.accel };
+              let feedData: Uint8Array;
+
+              if (strat.useAVCC && chunk.desc) {
+                // AVCC mode: pass description, feed raw AVCC data
+                configObj.description = chunk.desc;
+                feedData = chunk.data;
+              } else {
+                // Annex-B mode: convert AVCC to Annex-B, no description
+                feedData = isAnnexB(chunk.data) ? chunk.data : avccToAnnexB(chunk.data);
+              }
+
+              dec.configure(configObj);
+              dec.decode(new (window as any).EncodedVideoChunk({
+                type: chunk.type,
+                timestamp: chunk.timestamp,
+                data: feedData
+              }));
+            }
+
+            await dec.flush();
+            dec.close();
+            const result = decoded ? '✓ PASS' : '✗ FAIL (no output)';
+            log(`[SELF-TEST] ${strat.name}: ${result}`);
+            if (decoded) {
+              log(`[SELF-TEST] ✓ Working strategy found: ${strat.name}`);
+              break; // found one that works
+            }
+          } catch (e: any) {
+            log(`[SELF-TEST] ${strat.name}: ✗ FAIL (${e.name}: ${e.message})`);
+          }
+        }
       } catch (e: any) {
         log(`[SELF-TEST] Exception: ${e.name}: ${e.message}`);
       }
@@ -564,17 +570,13 @@
               log(`[TX] Captured SPS/PPS from encoder metadata`);
             }
 
-            // Convert AVCC → Annex-B, prepend SPS/PPS on keyframes
+            // Convert AVCC → Annex-B (don't prepend SPS/PPS - encoder includes them inline for keyframes)
             const gotAnnexB = isAnnexB(raw);
             let annexBData: Uint8Array;
             if (gotAnnexB) {
-              // Already Annex-B (unlikely on WebKitGTK but handle it)
               annexBData = raw;
             } else {
-              const prependNals = (chunk.type === 'key' && encoderSPS.length > 0)
-                ? [...encoderSPS, ...encoderPPS]
-                : undefined;
-              annexBData = avccToAnnexB(raw, prependNals);
+              annexBData = avccToAnnexB(raw);
             }
 
             txFrameCount++;
