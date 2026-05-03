@@ -423,12 +423,6 @@ async fn flush_core_outputs_to_network(
                     }
                     str0m::Event::MediaData(data) => {
                         // Route incoming str0m MediaData events with raw bytes
-                        println!(
-                            "Quick: MediaData event mid={:?}, bytes={}, contiguous={}",
-                            data.mid,
-                            data.data.len(),
-                            data.contiguous
-                        );
                         let _ = event_tx.send(QuickEvent::MediaData(data.mid, data.data.clone()));
                     }
                     str0m::Event::MediaAdded(media_added) => {
