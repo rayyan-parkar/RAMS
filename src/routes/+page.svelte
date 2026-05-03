@@ -198,7 +198,7 @@
           }
         });
         videoDecoder.configure({ 
-          codec: 'avc1.64001F', // High Profile, Level 3.1
+          codec: 'avc1.42001f', // Constrained Baseline Profile, Level 3.1
           hardwareAcceleration: 'prefer-hardware'
         });
       }
@@ -230,15 +230,13 @@
           }
         });
         // Try both hardware and software for self-test to be sure
-        testDecoder.configure({ codec: 'avc1.64001F', hardwareAcceleration: 'prefer-hardware' });
+        testDecoder.configure({ codec: 'avc1.42001f', hardwareAcceleration: 'prefer-hardware' });
 
         const testEncoder = new (window as any).VideoEncoder({
           output: (chunk: any) => {
-            // Prep Annex-B start code
-            const annexB = new Uint8Array([0, 0, 0, 1]);
-            const buf = new Uint8Array(chunk.byteLength + 4);
-            buf.set(annexB, 0);
-            chunk.copyTo(buf.subarray(4));
+            // Encoder outputs Annex-B natively (start codes included)
+            const buf = new Uint8Array(chunk.byteLength);
+            chunk.copyTo(buf);
 
             try {
               testDecoder.decode(new (window as any).EncodedVideoChunk({
@@ -252,7 +250,7 @@
           },
           error: (e: any) => log(`[SELF-TEST] Encode error: ${e}`)
         });
-        testEncoder.configure({ codec: 'avc1.64001F', width: 64, height: 64, bitrate: 500_000, latencyMode: 'realtime' });
+        testEncoder.configure({ codec: 'avc1.42001f', width: 64, height: 64, bitrate: 500_000, latencyMode: 'realtime', avc: { format: 'annexb' } });
         testEncoder.encode(testFrame, { keyFrame: true });
         testFrame.close();
         
@@ -295,7 +293,7 @@
 
       // Check if H.264 is actually supported in this browser engine
       try {
-        const support = await (window as any).VideoDecoder.isConfigSupported({ codec: 'avc1.64001F' });
+        const support = await (window as any).VideoDecoder.isConfigSupported({ codec: 'avc1.42001f' });
         log(`[AUDIT] H.264 support: supported=${support.supported}`);
       } catch (e) {
         log(`[WARN] Could not check H.264 support: ${e}`);
@@ -328,19 +326,12 @@
           try {
             if (videoDecoder && videoDecoder.state === 'configured') {
               videoTimestamp += 33333; 
-              
-              // Ensure Annex-B start code
-              let finalData = uint8;
-              if (uint8[0] !== 0 || uint8[1] !== 0 || uint8[2] !== 0 || uint8[3] !== 1) {
-                finalData = new Uint8Array(uint8.length + 4);
-                finalData.set([0, 0, 0, 1], 0);
-                finalData.set(uint8, 4);
-              }
 
+              // Data arrives as Annex-B (start codes already present from encoder)
               videoDecoder.decode(new (window as any).EncodedVideoChunk({
                 type: 'key', // Force keyframe type for now
                 timestamp: videoTimestamp,
-                data: finalData
+                data: uint8
               }));
             }
           } catch (e: any) {
@@ -420,10 +411,9 @@
       const videoEncoder = new (window as any).VideoEncoder({
         output: (chunk: any) => {
           if (connectionState === 'CONNECTED') {
-            const annexB = new Uint8Array([0, 0, 0, 1]);
-            const data = new Uint8Array(chunk.byteLength + 4);
-            data.set(annexB, 0);
-            chunk.copyTo(data.subarray(4));
+            // Encoder outputs Annex-B natively (start codes included)
+            const data = new Uint8Array(chunk.byteLength);
+            chunk.copyTo(data);
             
             if (Math.random() < 0.01) log(`[TX] Sending ${data.length} byte H.264 frame`);
             invoke('send_video_chunk', { data: Array.from(data) });
@@ -433,13 +423,14 @@
       });
       try {
         videoEncoder.configure({ 
-          codec: 'avc1.64001F', 
+          codec: 'avc1.42001f', // Constrained Baseline Profile, Level 3.1
           width: 640, 
           height: 480, 
           bitrate: 1_000_000,
-          latencyMode: 'realtime'
+          latencyMode: 'realtime',
+          avc: { format: 'annexb' }
         });
-        log('[OK] VideoEncoder configured for H.264 High Profile');
+        log('[OK] VideoEncoder configured for H.264 Constrained Baseline');
       } catch (e) {
         log(`[ERR] VideoEncoder config failed: ${e}`);
       }
@@ -548,12 +539,12 @@
     {:else}
       <div class="video-grid">
         <div class="video-box local">
-          <span>> LOCAL_TX [VP8]</span>
+          <span>> LOCAL_TX [H.264]</span>
           <video bind:this={localVideoRef} autoplay muted playsinline class="glow"></video>
           <div class="mic-visualizer">MIC: {getAsciiBar(localAudioLevel)}</div>
         </div>
         <div class="video-box remote">
-          <span>> REMOTE_RX [VP8]</span>
+          <span>> REMOTE_RX [H.264]</span>
           <video bind:this={remoteVideoRef} autoplay playsinline></video>
           <div class="mic-visualizer">VOL: {getAsciiBar(remoteAudioLevel)}</div>
         </div>

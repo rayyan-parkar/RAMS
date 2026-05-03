@@ -78,7 +78,7 @@
             # Allow GStreamer to find plugins for media processing
             export GST_PLUGIN_SYSTEM_PATH_1_0="${gstPluginPath}"
             export GST_PLUGIN_PATH_1_0="${gstPluginPath}"
-            export GST_PLUGIN_SCANNER="${pkgs.gst_all_1.gstreamer.dev}/libexec/gstreamer-1.0/gst-plugin-scanner"
+            export GST_PLUGIN_SCANNER="${pkgs.gst_all_1.gstreamer.out}/libexec/gstreamer-1.0/gst-plugin-scanner"
             
             # VA-API support (Nvidia specific as per suggestion)
             export LIBVA_DRIVERS_PATH="/run/opengl-driver/lib/dri"
