@@ -214,32 +214,25 @@
 
       let rxVideoChunks = 0;
       let rxAudioChunks = 0;
-      let videoOffset = -1;
 
-      await listen('webrtc-media-data', (event) => {
-        const [kind, data] = event.payload as [string, number[]];
-        const uint8 = new Uint8Array(data);
-        if (uint8.length === 0) return;
-
-      function parseVp8Descriptor(uint8: Uint8Array) {
-        let offset = 1;
-        const x = (uint8[0] & 0x80) !== 0; // Extension
-        if (x) {
-          const x2 = uint8[1];
-          offset++;
-          const i = (x2 & 0x80) !== 0; // PictureID
-          const l = (x2 & 0x40) !== 0; // TL0PICIDX
-          const t = (x2 & 0x20) !== 0; // TID
-          const k = (x2 & 0x10) !== 0; // KEYIDX
-          
-          if (i) {
-            if ((uint8[offset] & 0x80) !== 0) offset += 2; // 16-bit PicID
-            else offset += 1; // 7-bit PicID
+      // RFC 7741 VP8 RTP Payload Descriptor parser
+      function parseVp8PayloadOffset(buf: Uint8Array): number {
+        if (buf.length < 1) return 0;
+        let off = 1;
+        const hasExtension = (buf[0] & 0x80) !== 0;
+        if (hasExtension && buf.length > 1) {
+          const ext = buf[1];
+          off = 2;
+          const hasPictureId = (ext & 0x80) !== 0;
+          const hasTl0PicIdx = (ext & 0x40) !== 0;
+          const hasTidOrKeyIdx = (ext & 0x20) !== 0 || (ext & 0x10) !== 0;
+          if (hasPictureId && off < buf.length) {
+            off += (buf[off] & 0x80) !== 0 ? 2 : 1; // 16-bit or 7-bit PictureID
           }
-          if (l) offset += 1;
-          if (t || k) offset += 1;
+          if (hasTl0PicIdx) off += 1;
+          if (hasTidOrKeyIdx) off += 1;
         }
-        return offset;
+        return Math.min(off, buf.length);
       }
 
       await listen('webrtc-media-data', (event) => {
@@ -250,7 +243,7 @@
         if (kind === 'video') {
           rxVideoChunks++;
           
-          const offset = parseVp8Descriptor(uint8);
+          const offset = parseVp8PayloadOffset(uint8);
           if (offset >= uint8.length) return;
 
           const bitstream = uint8.slice(offset);
