@@ -23,6 +23,8 @@ pub struct RAMSCore {
     pub pending_audio_direction: Option<Direction>,
     /// Pending local video direction to stage in the next local offer.
     pub pending_video_direction: Option<Direction>,
+    /// Last time we logged a media event to prevent flooding
+    pub last_media_log_time: Instant,
 }
 
 impl RAMSCore {
@@ -39,16 +41,15 @@ impl RAMSCore {
             video_mid: None,
             pending_audio_direction: None,
             pending_video_direction: None,
+            last_media_log_time: now,
         }
     }
 
     /// Transparently passes input to str0m.
     pub fn handle_input(&mut self, input: str0m::Input) -> Result<(), RtcError> {
+        // Only log non-timeout events to keep output readable
         if !matches!(input, str0m::Input::Timeout(_)) {
-            let is_stun = matches!(input, str0m::Input::Receive(_, str0m::net::Receive { contents: str0m::net::DatagramContents::Stun(_), .. }));
-            if !is_stun {
-                println!("RAMSCore: handle_input({:?})", input);
-            }
+            // Throttled logging could be added here if needed, but for now we'll keep signaling logs
         }
         self.rtc.handle_input(input)
     }
@@ -56,8 +57,14 @@ impl RAMSCore {
     /// Transparently polls output from str0m and updates signaling state automatically.
     pub fn poll_output(&mut self) -> Result<str0m::Output, RtcError> {
         let output = self.rtc.poll_output()?;
-        if !matches!(output, str0m::Output::Timeout(_)) {
-            println!("RAMSCore: poll_output -> {:?}", output);
+        
+        // Suppress noisy output during steady state
+        let is_noisy = matches!(&output, str0m::Output::Timeout(_) | str0m::Output::Transmit(_));
+        if !is_noisy {
+             // For non-media events, log them normally
+             if !matches!(&output, str0m::Output::Event(str0m::Event::MediaData(_))) {
+                 println!("RAMSCore: poll_output -> {:?}", output);
+             }
         }
         
         match &output {
@@ -87,6 +94,13 @@ impl RAMSCore {
                         println!("RAMSCore: ICE connection ready, DTLS handshake will now initiate");
                     }
                     _ => {}
+                }
+            }
+            str0m::Output::Event(str0m::Event::MediaData(data)) => {
+                let now = Instant::now();
+                if now.duration_since(self.last_media_log_time) >= std::time::Duration::from_secs(1) {
+                    println!("RAMSCore Status: Receiving Media ({} bytes, mid={:?})", data.data.len(), data.mid);
+                    self.last_media_log_time = now;
                 }
             }
             _ => {}
