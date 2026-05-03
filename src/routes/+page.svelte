@@ -34,7 +34,10 @@
 
   function setupVisualizers(lStream: MediaStream, rVideo: HTMLVideoElement) {
     try {
-      if (!audioCtx) audioCtx = new window.AudioContext();
+      if (!audioCtx) {
+        audioCtx = new window.AudioContext({ sampleRate: 48000 });
+      }
+      const ctx = audioCtx;
       
       const localAnalyser = audioCtx.createAnalyser();
       localAnalyser.fftSize = 256;
@@ -172,7 +175,9 @@
         log(`[ERR] VideoDecoder config failed: ${e}`);
       }
 
-      audioCtx = new window.AudioContext({ sampleRate: 48000 });
+      if (!audioCtx) {
+        audioCtx = new window.AudioContext({ sampleRate: 48000 });
+      }
       const audioDecoder = new (window as any).AudioDecoder({
         output: (audioData: any) => {
           if (!audioCtx) return;
@@ -190,8 +195,8 @@
         error: (e: any) => log(`[ERR] AudioDecoder: ${e}`)
       });
       try {
-        audioDecoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1 });
-        log('[OK] AudioDecoder configured for Opus (1-ch)');
+        audioDecoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 2 });
+        log('[OK] AudioDecoder configured for Opus (2-ch)');
       } catch (e) {
         log(`[ERR] AudioDecoder config failed: ${e}`);
       }
@@ -210,17 +215,27 @@
 
         if (kind === 'video') {
           rxVideoChunks++;
-          if (rxVideoChunks < 10 || rxVideoChunks % 30 === 0) {
-            log(`[RX] Received video chunk #${rxVideoChunks} (size=${uint8.length})`);
+          if (rxVideoChunks < 5) {
+             log(`[RX] Chunk #${rxVideoChunks} bytes: ${Array.from(uint8.slice(0, 20)).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
           }
-          // Basic VP8 keyframe check: first bit of payload descriptor is 0
-          const isKeyframe = (uint8[0] & 0x01) === 0;
+          
+          // VP8 Bitstream Finder: Look for the 3-byte keyframe header [?? 9d 01 2a]
+          // or at least handle the potential descriptor offset.
+          let offset = 0;
+          if (uint8[0] === 0x30 && uint8[3] === 0x9d && uint8[4] === 0x01) {
+            // This matches the [30 4c 02 9d 01] pattern seen in logs
+            offset = 2; 
+          }
+          
+          const bitstream = uint8.slice(offset);
+          const isKeyframe = (bitstream[0] & 0x01) === 0;
+
           try {
             const EncodedVideoChunkCtor = (window as any).EncodedVideoChunk;
             videoDecoder.decode(new EncodedVideoChunkCtor({
               type: isKeyframe ? 'key' : 'delta',
               timestamp: performance.now() * 1000,
-              data: uint8
+              data: bitstream
             }));
           } catch (e) {
             log(`[ERR] Video decode fail: ${e}`);
