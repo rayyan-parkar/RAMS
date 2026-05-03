@@ -110,11 +110,11 @@
       
       const { listen } = await import('@tauri-apps/api/event');
 
-      listen('webrtc-connecting', (event) => {
+      await listen('webrtc-connecting', (event) => {
         log(`[RUST] Connecting: ${event.payload}`);
       });
 
-      listen('webrtc-connected', (event) => {
+      await listen('webrtc-connected', (event) => {
         connectionState = 'CONNECTED';
         log(`[RUST] Connected: ${event.payload}`);
       });
@@ -124,10 +124,19 @@
       remoteCanvas.width = 640;
       remoteCanvas.height = 480;
       const remoteCtx = remoteCanvas.getContext('2d');
-      if (remoteVideoRef) {
-        // Feed decoded frames to the remote video element
-        remoteVideoRef.srcObject = remoteCanvas.captureStream(30);
+      const remoteCanvasStream = remoteCanvas.captureStream(30);
+      
+      // Defer binding until DOM element is available (Svelte bind:this runs after tick)
+      function tryBindRemoteVideo() {
+        if (remoteVideoRef) {
+          remoteVideoRef.srcObject = remoteCanvasStream;
+          log('[OK] Remote video element bound to decode canvas');
+        } else {
+          log('[SYS] Waiting for remote video element to mount...');
+          requestAnimationFrame(tryBindRemoteVideo);
+        }
       }
+      tryBindRemoteVideo();
 
       const videoDecoder = new (window as any).VideoDecoder({
         output: (frame: any) => {
@@ -163,8 +172,8 @@
         error: (e: any) => log(`[ERR] AudioDecoder: ${e}`)
       });
       try {
-        audioDecoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 2 });
-        log('[OK] AudioDecoder configured for Opus (2-ch)');
+        audioDecoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1 });
+        log('[OK] AudioDecoder configured for Opus (1-ch)');
       } catch (e) {
         log(`[ERR] AudioDecoder config failed: ${e}`);
       }
@@ -174,7 +183,7 @@
         audioCtx.resume();
       }
 
-      listen('webrtc-media-data', (event) => {
+      await listen('webrtc-media-data', (event) => {
         const [kind, data] = event.payload as [string, number[]];
         const uint8 = new Uint8Array(data);
         if (uint8.length === 0) return;
@@ -296,8 +305,8 @@
       }
       encodeVideo(); // Start grabbing frames
 
-      // Audio Encoding
-      const captureAudioCtx = new window.AudioContext();
+      // Audio Encoding (force 48kHz to match Opus encoder config)
+      const captureAudioCtx = new window.AudioContext({ sampleRate: 48000 });
       const audioSource = captureAudioCtx.createMediaStreamSource(stream);
       // Using ScriptProcessorNode (deprecated but widely supported) to grab PCM data
       const scriptNode = captureAudioCtx.createScriptProcessor(4096, 1, 1);
