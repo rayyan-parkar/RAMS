@@ -124,6 +124,9 @@ impl RAMSCore {
             return Err("Only the Initiator can create an offer".to_string());
         }
 
+        // Sync clock to prevent DTLS timeouts due to time jumps since initialization
+        let _ = self.rtc.handle_input(str0m::Input::Timeout(Instant::now()));
+        
         let mut sdp_api = self.rtc.sdp_api();
         let mut staged_changes = 0usize;
 
@@ -181,6 +184,9 @@ impl RAMSCore {
         &mut self,
         msg: SignalingMessage,
     ) -> Result<Option<SignalingMessage>, String> {
+        // Sync clock to prevent DTLS timeouts due to time jumps during signaling wait
+        let _ = self.rtc.handle_input(str0m::Input::Timeout(Instant::now()));
+        
         println!("RAMSCore: handle_signaling({:?}) in role {:?}, state {:?}", msg, self.signaling_handler.role, self.signaling_handler.state);
         match msg {
             SignalingMessage::Offer { sdp } => {
