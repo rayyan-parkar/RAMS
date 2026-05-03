@@ -49,6 +49,7 @@ async fn start_quick_call(
                             let _ = app_handle.emit("webrtc-ice-state", state);
                         }
                         QuickEvent::MediaData(mid, data) => {
+                            println!("RUST -> TAURI BRIDGE: received {} bytes for {}", data.len(), mid);
                             let _ = app_handle.emit("webrtc-media-data", (mid, data));
                         }
                     }

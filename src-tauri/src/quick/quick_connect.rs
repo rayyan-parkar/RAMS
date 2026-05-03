@@ -429,11 +429,12 @@ async fn flush_core_outputs_to_network(
                         let _ = event_tx.send(QuickEvent::IceState(format!("{:?}", state)));
                     }
                     str0m::Event::MediaData(data) => {
-                        // PT 111 is usually Opus (Audio). Others are Video (VP8).
                         let kind = if *data.pt == 111 { "audio" } else { "video" };
                         
-                        // In str0m 0.18.1, MediaData.data is already a full, reassembled,
-                        // and depayloaded frame. We can send it directly to the frontend.
+                        if data.data.len() > 0 {
+                             println!("RUST: MediaData(kind={}, size={})", kind, data.data.len());
+                        }
+
                         let _ = event_tx.send(QuickEvent::MediaData(kind.to_string(), data.data));
                     }
                     str0m::Event::MediaAdded(media_added) => {
