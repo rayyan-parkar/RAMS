@@ -163,10 +163,15 @@
         error: (e: any) => log(`[ERR] AudioDecoder: ${e}`)
       });
       try {
-        audioDecoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1 });
-        log('[OK] AudioDecoder configured for Opus');
+        audioDecoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 2 });
+        log('[OK] AudioDecoder configured for Opus (2-ch)');
       } catch (e) {
         log(`[ERR] AudioDecoder config failed: ${e}`);
+      }
+
+      // Ensure AudioContext is active
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
       }
 
       listen('webrtc-media-data', (event) => {
