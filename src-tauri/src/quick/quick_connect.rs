@@ -431,11 +431,6 @@ async fn flush_core_outputs_to_network(
                     }
                     str0m::Event::MediaData(data) => {
                         let kind = if *data.pt == 111 { "audio" } else { "video" };
-                        
-                        if data.data.len() > 0 && kind == "video" {
-                             println!("RUST: {} bytes of video (PT={}). First 5 bytes: {:02x?}", data.data.len(), *data.pt, &data.data[..std::cmp::min(5, data.data.len())]);
-                        }
-
                         let _ = event_tx.send(QuickEvent::MediaData(kind.to_string(), data.data));
                     }
                     str0m::Event::MediaAdded(media_added) => {

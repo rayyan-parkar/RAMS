@@ -49,7 +49,14 @@ async fn start_quick_call(
                             let _ = app_handle.emit("webrtc-ice-state", state);
                         }
                         QuickEvent::MediaData(mid, data) => {
-                            println!("RUST -> TAURI BRIDGE: received {} bytes for {}", data.len(), mid);
+                            // Only log bridge activity every 100 packets to avoid flooding
+                            static mut PKT_COUNT: u64 = 0;
+                            unsafe {
+                                PKT_COUNT += 1;
+                                if PKT_COUNT % 100 == 0 {
+                                    println!("BRIDGE: Forwarded {} packets total. Last: {} ({} bytes)", PKT_COUNT, mid, data.len());
+                                }
+                            }
                             let _ = app_handle.emit("webrtc-media-data", (mid, data));
                         }
                     }

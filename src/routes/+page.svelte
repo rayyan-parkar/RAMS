@@ -88,6 +88,23 @@
     log(`[SYS] Video ${isVideoOff ? 'OFF' : 'ON'}`);
   }
 
+  function auditEnvironment() {
+    const check = (name: string) => !!(window as any)[name];
+    log(`[AUDIT] WebCodecs classes: 
+      VideoEncoder: ${check('VideoEncoder')}, 
+      VideoDecoder: ${check('VideoDecoder')}, 
+      AudioEncoder: ${check('AudioEncoder')}, 
+      AudioDecoder: ${check('AudioDecoder')},
+      EncodedVideoChunk: ${check('EncodedVideoChunk')},
+      EncodedAudioChunk: ${check('EncodedAudioChunk')},
+      VideoFrame: ${check('VideoFrame')},
+      AudioData: ${check('AudioData')}`);
+    
+    if (typeof (window as any).VideoDecoder === 'undefined') {
+      log('[ERR] VideoDecoder is NOT supported in this browser environment!');
+    }
+  }
+
   async function leaveRoom() {
     log('[SYS] Disconnecting...');
     if (visualizerFrameId) cancelAnimationFrame(visualizerFrameId);
@@ -122,6 +139,8 @@
         log(`[RUST] Connected: ${event.payload}`);
       });
 
+      auditEnvironment();
+
       // --- WEBCODECS DECODING SETUP ---
       const remoteCanvas = document.createElement('canvas');
       remoteCanvas.width = 640;
@@ -130,25 +149,14 @@
       const remoteCanvasStream = remoteCanvas.captureStream(30);
       
       // Defer binding until DOM element is available (Svelte bind:this runs after tick)
-      let heartbeatOffset = 0;
       function tryBindRemoteVideo() {
         if (remoteVideoRef) {
           remoteVideoRef.srcObject = remoteCanvasStream;
           remoteVideoRef.play().catch(e => log(`[WARN] video.play() failed: ${e}`));
           log('[OK] Remote video element bound and play() called');
           
-          // Add a "heartbeat" to the canvas so we can see if the stream is alive at all
-          setInterval(() => {
-            if (remoteCtx) {
-              remoteCtx.fillStyle = 'red';
-              remoteCtx.fillRect(heartbeatOffset % 640, 0, 10, 10);
-              heartbeatOffset += 5;
-            }
-          }, 100);
-          
           if (localStream) setupVisualizers(localStream, remoteVideoRef);
         } else {
-          log('[SYS] Waiting for remote video element to mount...');
           requestAnimationFrame(tryBindRemoteVideo);
         }
       }
@@ -158,7 +166,7 @@
       const videoDecoder = new (window as any).VideoDecoder({
         output: (frame: any) => {
           remoteFrameCount++;
-          if (remoteFrameCount < 10 || remoteFrameCount % 30 === 0) {
+          if (remoteFrameCount === 1 || remoteFrameCount % 100 === 0) {
             log(`[DEC] SUCCESS: Decoded frame #${remoteFrameCount} (${frame.displayWidth}x${frame.displayHeight})`);
           }
           if (remoteCtx) {
@@ -166,11 +174,11 @@
           }
           frame.close();
         },
-        error: (e: any) => log(`[ERR] VideoDecoder: ${e}`)
+        error: (e: any) => log(`[ERR] VideoDecoder: ${e.name} - ${e.message}`)
       });
       try {
         videoDecoder.configure({ codec: 'vp8' });
-        log('[OK] VideoDecoder configured for VP8');
+        log(`[OK] VideoDecoder configured. Initial state: ${videoDecoder.state}`);
       } catch (e) {
         log(`[ERR] VideoDecoder config failed: ${e}`);
       }
@@ -215,15 +223,19 @@
 
         if (kind === 'video') {
           rxVideoChunks++;
-          if (rxVideoChunks < 5) {
-             log(`[RX] Chunk #${rxVideoChunks} bytes: ${Array.from(uint8.slice(0, 20)).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
+          
+          if (rxVideoChunks === 1) {
+            const head = Array.from(uint8.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+            log(`[PROBE] First video chunk: ${uint8.length} bytes. Head: [${head}]`);
           }
           
+          if (rxVideoChunks % 100 === 0) {
+            log(`[RX] Received ${rxVideoChunks} video chunks. Decoder state: ${videoDecoder.state}`);
+          }
+
           // VP8 Bitstream Finder: Look for the 3-byte keyframe header [?? 9d 01 2a]
-          // or at least handle the potential descriptor offset.
           let offset = 0;
           if (uint8[0] === 0x30 && uint8[3] === 0x9d && uint8[4] === 0x01) {
-            // This matches the [30 4c 02 9d 01] pattern seen in logs
             offset = 2; 
           }
           
@@ -238,11 +250,11 @@
               data: bitstream
             }));
           } catch (e) {
-            log(`[ERR] Video decode fail: ${e}`);
+            log(`[ERR] Video chunk #${rxVideoChunks} decode call fail: ${e}`);
           }
         } else if (kind === 'audio') {
           rxAudioChunks++;
-          if (rxAudioChunks % 50 === 0) log(`[RX] Received ${rxAudioChunks} audio chunks`);
+          if (rxAudioChunks % 500 === 0) log(`[RX] Received ${rxAudioChunks} audio chunks`);
           try {
             const EncodedAudioChunkCtor = (window as any).EncodedAudioChunk;
             audioDecoder.decode(new EncodedAudioChunkCtor({
@@ -251,7 +263,7 @@
               data: uint8
             }));
           } catch (e) {
-            log(`[ERR] Audio decode fail: ${e}`);
+            if (rxAudioChunks % 500 === 0) log(`[ERR] Audio decode fail: ${e}`);
           }
         }
       });
