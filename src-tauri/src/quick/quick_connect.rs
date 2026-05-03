@@ -381,7 +381,6 @@ async fn dispatch_websocket_message_to_core(
 }
 
 /// Polls the RAMSCore for pending work (transmissions, timeouts, events) and executes it.
-/// This is the "driver" part of the Sans-I/O pattern.
 async fn flush_core_outputs_to_network(
     core: &std::sync::Arc<Mutex<RAMSCore>>,
     socket: &UdpSocket,

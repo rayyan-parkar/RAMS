@@ -7,12 +7,22 @@ use str0m::media::{Mid};
 
 /// A superset of str0m that implements a signaling state machine.
 pub struct RAMSCore {
+    /// A new str0m Rtc object
     pub rtc: str0m::Rtc,
+    /// A handle for the signaling state machine
     pub signaling_handler: SignalingHandler,
+    /// A queue of remote candidates that have been received but not yet applied
     pub pending_remote_candidates: Vec<str0m::Candidate>,
+    /// A pending offer that has not yet been applied
     pub pending_offer: Option<SdpPendingOffer>,
+    /// The time when the RAMSCore was created
     pub start_time: Instant,
+    /// The Media Information Descriptor (MID) of the video track, it tracks the identifier of the media, the media type, and the direction.
     pub video_mid: Option<Mid>,
+    /// Pending local audio direction to stage in the next local offer.
+    pub pending_audio_direction: Option<Direction>,
+    /// Pending local video direction to stage in the next local offer.
+    pub pending_video_direction: Option<Direction>,
 }
 
 impl RAMSCore {
@@ -27,6 +37,8 @@ impl RAMSCore {
             pending_offer: None,
             start_time: now,
             video_mid: None,
+            pending_audio_direction: None,
+            pending_video_direction: None,
         }
     }
 
@@ -68,14 +80,20 @@ impl RAMSCore {
 
     /// Adds an audio track with the specified direction.
     pub fn add_audio(&mut self, direction: Direction) {
-        println!("RAMSCore: adding audio media with direction {:?}", direction);
-        self.rtc.sdp_api().add_media(MediaKind::Audio, direction, None, None, None);
+        println!(
+            "RAMSCore: queueing audio media with direction {:?} for next offer",
+            direction
+        );
+        self.pending_audio_direction = Some(direction);
     }
 
     /// Adds a video track with the specified direction.
     pub fn add_video(&mut self, direction: Direction) {
-        println!("RAMSCore: adding video media with direction {:?}", direction);
-        self.rtc.sdp_api().add_media(MediaKind::Video, direction, None, None, None);
+        println!(
+            "RAMSCore: queueing video media with direction {:?} for next offer",
+            direction
+        );
+        self.pending_video_direction = Some(direction);
     }
 
     /// Adds a data channel with the given label.
@@ -92,10 +110,44 @@ impl RAMSCore {
             return Err("Only the Initiator can create an offer".to_string());
         }
 
-        let (offer, pending) = self.rtc
-            .sdp_api()
+        let mut sdp_api = self.rtc.sdp_api();
+        let mut staged_changes = 0usize;
+
+        if let Some(direction) = self.pending_audio_direction {
+            println!(
+                "RAMSCore: staging pending audio media in offer with direction {:?}",
+                direction
+            );
+            sdp_api.add_media(MediaKind::Audio, direction, None, None, None);
+            staged_changes += 1;
+        }
+
+        if let Some(direction) = self.pending_video_direction {
+            println!(
+                "RAMSCore: staging pending video media in offer with direction {:?}",
+                direction
+            );
+            sdp_api.add_media(MediaKind::Video, direction, None, None, None);
+            staged_changes += 1;
+        }
+
+        let (offer, pending) = sdp_api
             .apply()
-            .ok_or_else(|| "No local changes to negotiate".to_string())?;
+            .ok_or_else(|| {
+                format!(
+                    "No local changes to negotiate (staged_changes={}, pending_audio={:?}, pending_video={:?})",
+                    staged_changes,
+                    self.pending_audio_direction,
+                    self.pending_video_direction
+                )
+            })?;
+
+        if self.pending_audio_direction.is_some() {
+            self.pending_audio_direction = None;
+        }
+        if self.pending_video_direction.is_some() {
+            self.pending_video_direction = None;
+        }
 
         println!("RAMSCore: created SDP offer and pending change set");
 
