@@ -25,6 +25,8 @@ pub struct RAMSCore {
     pub pending_video_direction: Option<Direction>,
     /// Last time we logged a media event to prevent flooding
     pub last_media_log_time: Instant,
+    /// Last time we logged a transmit event
+    pub last_transmit_log_time: Instant,
 }
 
 impl RAMSCore {
@@ -42,6 +44,7 @@ impl RAMSCore {
             pending_audio_direction: None,
             pending_video_direction: None,
             last_media_log_time: now,
+            last_transmit_log_time: now,
         }
     }
 
@@ -59,10 +62,17 @@ impl RAMSCore {
         let output = self.rtc.poll_output()?;
         
         // Suppress noisy output during steady state
-        let is_noisy = matches!(&output, str0m::Output::Timeout(_) | str0m::Output::Transmit(_));
+        let is_noisy = matches!(&output, str0m::Output::Timeout(_));
         if !is_noisy {
-             // For non-media events, log them normally
-             if !matches!(&output, str0m::Output::Event(str0m::Event::MediaData(_))) {
+             // Throttled logging for Transmit
+             if let str0m::Output::Transmit(transmit) = &output {
+                 let now = Instant::now();
+                 if now.duration_since(self.last_transmit_log_time) >= std::time::Duration::from_secs(1) {
+                     println!("RAMSCore Status: Transmitting UDP ({} bytes to {})", transmit.contents.len(), transmit.destination);
+                     self.last_transmit_log_time = now;
+                 }
+             } else if !matches!(&output, str0m::Output::Event(str0m::Event::MediaData(_))) {
+                 // For other non-media events, log them normally
                  println!("RAMSCore: poll_output -> {:?}", output);
              }
         }

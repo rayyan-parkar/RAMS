@@ -399,11 +399,6 @@ async fn flush_core_outputs_to_network(
             }
             str0m::Output::Transmit(transmit) => {
                 // Send encrypted WebRTC data (RTP/RTCP/DTLS) over the UDP socket.
-                println!(
-                    "Quick: str0m transmit -> {} bytes to {}",
-                    transmit.contents.len(),
-                    transmit.destination
-                );
                 let _ = socket.send_to(&transmit.contents, transmit.destination).await;
             }
             str0m::Output::Event(event) => {
