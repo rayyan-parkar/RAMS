@@ -276,8 +276,11 @@ impl RAMSCore {
         let answer = SdpAnswer::from_sdp_string(&sdp)
             .map_err(|e| format!("Invalid SDP Answer: {:?}", e))?;
 
-        self.rtc.sdp_api().accept_answer(pending, answer)
-            .map_err(|e| format!("Failed to accept answer: {:?}", e))?;
+        if let Err(e) = self.rtc.sdp_api().accept_answer(pending, answer) {
+            let err_msg = format!("Failed to accept answer: {:?}", e);
+            eprintln!("RAMSCore: ERROR: {}", err_msg);
+            return Err(err_msg);
+        }
 
         println!("RAMSCore: answer accepted successfully");
 
