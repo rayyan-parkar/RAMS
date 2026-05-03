@@ -283,7 +283,6 @@ where
 
             // Drive the internal clock of the WebRTC engine
             _ = tokio::time::sleep_until(tokio::time::Instant::from_std(timeout)) => {
-                println!("Quick: Firing str0m timeout input");
                 let _ = core.lock().await.handle_input(str0m::Input::Timeout(Instant::now()));
             }
         }
@@ -401,7 +400,6 @@ async fn flush_core_outputs_to_network(
         match output {
             str0m::Output::Timeout(t) => {
                 // The engine tells us when it needs to be woken up next.
-                println!("Quick: str0m requested timeout at {:?}", t);
                 next_timeout = t;
                 break;
             }

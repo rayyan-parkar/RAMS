@@ -44,14 +44,18 @@ impl RAMSCore {
 
     /// Transparently passes input to str0m.
     pub fn handle_input(&mut self, input: str0m::Input) -> Result<(), RtcError> {
-        println!("RAMSCore: handle_input({:?})", input);
+        if !matches!(input, str0m::Input::Timeout(_)) {
+            println!("RAMSCore: handle_input({:?})", input);
+        }
         self.rtc.handle_input(input)
     }
 
     /// Transparently polls output from str0m and updates signaling state automatically.
     pub fn poll_output(&mut self) -> Result<str0m::Output, RtcError> {
         let output = self.rtc.poll_output()?;
-        println!("RAMSCore: poll_output -> {:?}", output);
+        if !matches!(output, str0m::Output::Timeout(_)) {
+            println!("RAMSCore: poll_output -> {:?}", output);
+        }
         
         match &output {
             str0m::Output::Event(str0m::Event::Connected) => {
