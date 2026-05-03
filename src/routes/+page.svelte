@@ -106,7 +106,8 @@
     log(`[SYS] authenticating room key: ${roomId}`);
     
     try {
-      log('[SYS] Attaching Rust event listeners before connecting...');
+      log(`[SYS] WebCodecs Check: VideoEncoder=${!!(window as any).VideoEncoder}, AudioEncoder=${!!(window as any).AudioEncoder}`);
+      
       const { listen } = await import('@tauri-apps/api/event');
 
       listen('webrtc-connecting', (event) => {
@@ -130,14 +131,21 @@
 
       const videoDecoder = new (window as any).VideoDecoder({
         output: (frame: any) => {
-          if (remoteCtx) remoteCtx.drawImage(frame, 0, 0, remoteCanvas.width, remoteCanvas.height);
+          if (remoteCtx) {
+            remoteCtx.drawImage(frame, 0, 0, remoteCanvas.width, remoteCanvas.height);
+          }
           frame.close();
         },
         error: (e: any) => log(`[ERR] VideoDecoder: ${e}`)
       });
-      videoDecoder.configure({ codec: 'vp8' });
+      try {
+        videoDecoder.configure({ codec: 'vp8' });
+        log('[OK] VideoDecoder configured for VP8');
+      } catch (e) {
+        log(`[ERR] VideoDecoder config failed: ${e}`);
+      }
 
-      audioCtx = new window.AudioContext();
+      audioCtx = new window.AudioContext({ sampleRate: 48000 });
       const audioDecoder = new (window as any).AudioDecoder({
         output: (audioData: any) => {
           if (!audioCtx) return;
@@ -154,12 +162,19 @@
         },
         error: (e: any) => log(`[ERR] AudioDecoder: ${e}`)
       });
-      audioDecoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1 });
+      try {
+        audioDecoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1 });
+        log('[OK] AudioDecoder configured for Opus');
+      } catch (e) {
+        log(`[ERR] AudioDecoder config failed: ${e}`);
+      }
 
       listen('webrtc-media-data', (event) => {
         const [kind, data] = event.payload as [string, number[]];
         const uint8 = new Uint8Array(data);
         if (uint8.length === 0) return;
+
+        if (Math.random() < 0.01) log(`[RX] Received ${uint8.length} bytes of ${kind}`);
 
         if (kind === 'video') {
           // Basic VP8 keyframe check: first bit of payload descriptor is 0
@@ -250,12 +265,18 @@
           if (connectionState === 'CONNECTED') {
             const data = new Uint8Array(chunk.byteLength);
             chunk.copyTo(data);
+            if (Math.random() < 0.01) log(`[TX] Sending ${data.length} byte video frame`);
             invoke('send_video_chunk', { data: Array.from(data) });
           }
         },
         error: (e: any) => log(`[ERR] VideoEncoder: ${e}`)
       });
-      videoEncoder.configure({ codec: 'vp8', width: 640, height: 480, bitrate: 1_000_000 });
+      try {
+        videoEncoder.configure({ codec: 'vp8', width: 640, height: 480, bitrate: 1_000_000 });
+        log('[OK] VideoEncoder configured');
+      } catch (e) {
+        log(`[ERR] VideoEncoder config failed: ${e}`);
+      }
 
       let frameCount = 0;
       function encodeVideo() {
@@ -281,12 +302,18 @@
           if (connectionState === 'CONNECTED') {
             const data = new Uint8Array(chunk.byteLength);
             chunk.copyTo(data);
+            if (Math.random() < 0.01) log(`[TX] Sending ${data.length} byte audio frame`);
             invoke('send_audio_chunk', { data: Array.from(data) });
           }
         },
         error: (e: any) => log(`[ERR] AudioEncoder: ${e}`)
       });
-      audioEncoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1, bitrate: 64000 });
+      try {
+        audioEncoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1, bitrate: 64000 });
+        log('[OK] AudioEncoder configured');
+      } catch (e) {
+        log(`[ERR] AudioEncoder config failed: ${e}`);
+      }
 
       let audioTime = 0;
       scriptNode.onaudioprocess = (e) => {
