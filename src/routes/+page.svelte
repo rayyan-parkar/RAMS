@@ -296,48 +296,6 @@
         return avcc;
       }
 
-      /** Ensure SPS and PPS are present in Annex-B keyframes (in case encoder drops them after the first frame) */
-      function ensureSpsPps(annexB: Uint8Array, sps: Uint8Array[], pps: Uint8Array[]): Uint8Array {
-        if (sps.length === 0 || pps.length === 0) return annexB;
-        
-        const nalTypes = parseAnnexB(annexB).map(n => nalType(n[0]));
-        if (nalTypes.includes(7) && nalTypes.includes(8)) {
-          return annexB; // Already present
-        }
-
-        // We need to inject them. Find AUD (NAL 9) to insert AFTER it, otherwise insert at beginning.
-        let insertOffset = 0;
-        for (let i = 0; i < annexB.length - 4; i++) {
-          if (annexB[i] === 0 && annexB[i+1] === 0 && annexB[i+2] === 0 && annexB[i+3] === 1) {
-            if (nalType(annexB[i+4]) === 9) {
-              for (let j = i + 4; j < annexB.length - 3; j++) {
-                if (annexB[j] === 0 && annexB[j+1] === 0 && annexB[j+2] === 1) {
-                  insertOffset = (annexB[j-1] === 0) ? j - 1 : j;
-                  break;
-                }
-              }
-            } else {
-              insertOffset = i;
-            }
-            break;
-          }
-        }
-        
-        const payload: Uint8Array[] = [];
-        for (const s of sps) { payload.push(new Uint8Array([0, 0, 0, 1])); payload.push(s); }
-        for (const p of pps) { payload.push(new Uint8Array([0, 0, 0, 1])); payload.push(p); }
-        
-        const payloadLen = payload.reduce((sum, p) => sum + p.length, 0);
-        const result = new Uint8Array(annexB.length + payloadLen);
-        
-        result.set(annexB.subarray(0, insertOffset), 0);
-        let offset = insertOffset;
-        for (const p of payload) { result.set(p, offset); offset += p.length; }
-        result.set(annexB.subarray(insertOffset), offset);
-        
-        return result;
-      }
-
       /** Extract SPS/PPS from Annex-B stream and construct AVCDecoderConfigurationRecord */
       function createAVCCDescriptionFromAnnexB(annexB: Uint8Array): ArrayBuffer | null {
         const nals = parseAnnexB(annexB);
@@ -711,18 +669,13 @@
               log(`[TX] Captured SPS/PPS from encoder metadata`);
             }
 
-            // Convert AVCC → Annex-B
+            // Convert AVCC → Annex-B (don't prepend SPS/PPS - encoder includes them inline for keyframes)
             const gotAnnexB = isAnnexB(raw);
             let annexBData: Uint8Array;
             if (gotAnnexB) {
               annexBData = raw;
             } else {
               annexBData = avccToAnnexB(raw);
-            }
-
-            // Ensure SPS/PPS are present on keyframes (in case the very first keyframe was dropped)
-            if (chunk.type === 'key') {
-              annexBData = ensureSpsPps(annexBData, encoderSPS, encoderPPS);
             }
 
             txFrameCount++;
