@@ -127,10 +127,23 @@
       const remoteCanvasStream = remoteCanvas.captureStream(30);
       
       // Defer binding until DOM element is available (Svelte bind:this runs after tick)
+      let heartbeatOffset = 0;
       function tryBindRemoteVideo() {
         if (remoteVideoRef) {
           remoteVideoRef.srcObject = remoteCanvasStream;
-          log('[OK] Remote video element bound to decode canvas');
+          remoteVideoRef.play().catch(e => log(`[WARN] video.play() failed: ${e}`));
+          log('[OK] Remote video element bound and play() called');
+          
+          // Add a "heartbeat" to the canvas so we can see if the stream is alive at all
+          setInterval(() => {
+            if (remoteCtx) {
+              remoteCtx.fillStyle = 'red';
+              remoteCtx.fillRect(heartbeatOffset % 640, 0, 10, 10);
+              heartbeatOffset += 5;
+            }
+          }, 100);
+          
+          if (localStream) setupVisualizers(localStream, remoteVideoRef);
         } else {
           log('[SYS] Waiting for remote video element to mount...');
           requestAnimationFrame(tryBindRemoteVideo);
@@ -138,8 +151,13 @@
       }
       tryBindRemoteVideo();
 
+      let remoteFrameCount = 0;
       const videoDecoder = new (window as any).VideoDecoder({
         output: (frame: any) => {
+          remoteFrameCount++;
+          if (remoteFrameCount < 10 || remoteFrameCount % 30 === 0) {
+            log(`[DEC] SUCCESS: Decoded frame #${remoteFrameCount} (${frame.displayWidth}x${frame.displayHeight})`);
+          }
           if (remoteCtx) {
             remoteCtx.drawImage(frame, 0, 0, remoteCanvas.width, remoteCanvas.height);
           }
@@ -183,14 +201,18 @@
         audioCtx.resume();
       }
 
+      let rxVideoChunks = 0;
+      let rxAudioChunks = 0;
       await listen('webrtc-media-data', (event) => {
         const [kind, data] = event.payload as [string, number[]];
         const uint8 = new Uint8Array(data);
         if (uint8.length === 0) return;
 
-        if (Math.random() < 0.01) log(`[RX] Received ${uint8.length} bytes of ${kind}`);
-
         if (kind === 'video') {
+          rxVideoChunks++;
+          if (rxVideoChunks < 10 || rxVideoChunks % 30 === 0) {
+            log(`[RX] Received video chunk #${rxVideoChunks} (size=${uint8.length})`);
+          }
           // Basic VP8 keyframe check: first bit of payload descriptor is 0
           const isKeyframe = (uint8[0] & 0x01) === 0;
           try {
@@ -204,6 +226,8 @@
             log(`[ERR] Video decode fail: ${e}`);
           }
         } else if (kind === 'audio') {
+          rxAudioChunks++;
+          if (rxAudioChunks % 50 === 0) log(`[RX] Received ${rxAudioChunks} audio chunks`);
           try {
             const EncodedAudioChunkCtor = (window as any).EncodedAudioChunk;
             audioDecoder.decode(new EncodedAudioChunkCtor({
