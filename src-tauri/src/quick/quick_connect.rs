@@ -227,10 +227,11 @@ where
     println!("Quick: Initializing local media tracks (audio + video sendrecv)");
     initialize_local_media(&core).await.map_err(QuickError::Protocol)?;
     println!("Quick: Local media tracks initialized, creating local ICE candidate");
-    let local_ip = add_local_candidate(&core, &socket, &ws_tx, &ws_url).map_err(QuickError::Protocol)?;
+    let local_ip = add_local_candidate(&core, &socket, &ws_tx, &ws_url).await.map_err(QuickError::Protocol)?;
 
     let mut timeout = Instant::now() + Duration::from_millis(100);
     let mut udp_buf = vec![0u8; 2000];
+    let mut last_udp_log = Instant::now();
 
     loop {
         tokio::select! {
@@ -267,6 +268,13 @@ where
                 destination.set_ip(local_ip);
                 
                 let contents = &udp_buf[..n];
+                
+                // Throttled heartbeat log
+                if last_udp_log.elapsed() >= Duration::from_secs(2) {
+                    println!("Quick Status: Receiving UDP ({} bytes from {})", n, source);
+                    last_udp_log = Instant::now();
+                }
+
                 if let Ok(receive) = str0m::net::Receive::new(str0m::net::Protocol::Udp, source, destination, contents) {
                     let input = str0m::Input::Receive(Instant::now(), receive);
                     let _ = core.lock().await.handle_input(input);
@@ -297,7 +305,7 @@ async fn initialize_local_media(core: &std::sync::Arc<Mutex<RAMSCore>>) -> Resul
     Ok(())
 }
 
-fn add_local_candidate(
+async fn add_local_candidate(
     core: &std::sync::Arc<Mutex<RAMSCore>>,
     socket: &UdpSocket,
     ws_tx: &mpsc::UnboundedSender<WireMessage>,
@@ -317,11 +325,10 @@ fn add_local_candidate(
     let candidate = str0m::Candidate::host(addr, "udp").map_err(|e| e.to_string())?;
     println!("Quick: Created local ICE candidate object: {:?}", candidate);
 
-    if let Ok(mut guard) = core.try_lock() {
+    {
+        let mut guard = core.lock().await;
         let _ = guard.rtc.add_local_candidate(candidate.clone());
         println!("Quick: Added local ICE candidate into str0m RTC");
-    } else {
-        println!("Quick: Could not lock RTC to add local ICE candidate immediately");
     }
 
     println!("Quick: Sending local ICE candidate: {}", candidate.to_sdp_string());
