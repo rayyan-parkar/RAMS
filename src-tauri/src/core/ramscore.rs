@@ -45,7 +45,10 @@ impl RAMSCore {
     /// Transparently passes input to str0m.
     pub fn handle_input(&mut self, input: str0m::Input) -> Result<(), RtcError> {
         if !matches!(input, str0m::Input::Timeout(_)) {
-            println!("RAMSCore: handle_input({:?})", input);
+            let is_stun = matches!(input, str0m::Input::Receive(_, str0m::net::Receive { contents: str0m::net::DatagramContents::Stun(_), .. }));
+            if !is_stun {
+                println!("RAMSCore: handle_input({:?})", input);
+            }
         }
         self.rtc.handle_input(input)
     }
@@ -218,13 +221,8 @@ impl RAMSCore {
         let offer = SdpOffer::from_sdp_string(&sdp)
             .map_err(|e| format!("Invalid SDP Offer: {:?}", e))?;
 
-        let answer = match self.rtc.sdp_api().accept_offer(offer) {
-            Ok(answer) => answer,
-            Err(e) => {
-                eprintln!("RAMSCore Error: Failed to accept incoming offer: {:?}", e);
-                return Err(format!("Failed to accept offer: {:?}", e));
-            }
-        };
+        let answer = self.rtc.sdp_api().accept_offer(offer)
+            .map_err(|e| format!("Failed to accept offer: {:?}", e))?;
 
         println!("RAMSCore: offer accepted and SDP answer prepared");
 
@@ -248,10 +246,8 @@ impl RAMSCore {
         let answer = SdpAnswer::from_sdp_string(&sdp)
             .map_err(|e| format!("Invalid SDP Answer: {:?}", e))?;
 
-        if let Err(e) = self.rtc.sdp_api().accept_answer(pending, answer) {
-            eprintln!("RAMSCore Error: Failed to accept incoming answer: {:?}", e);
-            return Err(format!("Failed to accept answer: {:?}", e));
-        }
+        self.rtc.sdp_api().accept_answer(pending, answer)
+            .map_err(|e| format!("Failed to accept answer: {:?}", e))?;
 
         println!("RAMSCore: answer accepted successfully");
 
