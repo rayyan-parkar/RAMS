@@ -252,6 +252,7 @@ where
                     println!("Quick: Incoming websocket signaling text: {}", text);
                     if let Ok(parsed) = serde_json::from_str::<WireMessage>(&text) {
                         if let Err(err) = dispatch_websocket_message_to_core(&core, parsed, &ws_tx).await {
+                            eprintln!("Quick: Signaling error: {}", err);
                             core.lock().await.signaling_handler.set_error(err);
                         }
                     } else {

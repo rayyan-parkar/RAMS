@@ -212,11 +212,13 @@ impl RAMSCore {
         let offer = SdpOffer::from_sdp_string(&sdp)
             .map_err(|e| format!("Invalid SDP Offer: {:?}", e))?;
 
-        let answer = self
-            .rtc
-            .sdp_api()
-            .accept_offer(offer)
-            .map_err(|e| format!("Failed to accept offer: {:?}", e))?;
+        let answer = match self.rtc.sdp_api().accept_offer(offer) {
+            Ok(answer) => answer,
+            Err(e) => {
+                eprintln!("RAMSCore Error: Failed to accept incoming offer: {:?}", e);
+                return Err(format!("Failed to accept offer: {:?}", e));
+            }
+        };
 
         println!("RAMSCore: offer accepted and SDP answer prepared");
 
@@ -240,10 +242,10 @@ impl RAMSCore {
         let answer = SdpAnswer::from_sdp_string(&sdp)
             .map_err(|e| format!("Invalid SDP Answer: {:?}", e))?;
 
-        self.rtc
-            .sdp_api()
-            .accept_answer(pending, answer)
-            .map_err(|e| format!("Failed to accept answer: {:?}", e))?;
+        if let Err(e) = self.rtc.sdp_api().accept_answer(pending, answer) {
+            eprintln!("RAMSCore Error: Failed to accept incoming answer: {:?}", e);
+            return Err(format!("Failed to accept answer: {:?}", e));
+        }
 
         println!("RAMSCore: answer accepted successfully");
 
