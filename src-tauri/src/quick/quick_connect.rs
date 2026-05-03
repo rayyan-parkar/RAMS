@@ -410,11 +410,20 @@ async fn flush_core_outputs_to_network(
                 // High-level events for the user application.
                 match event {
                     str0m::Event::Connected => {
-                        println!("Quick: WebRTC Connected!");
+                        println!("Quick: ========== DTLS HANDSHAKE COMPLETE ==========");
+                        println!("Quick: WebRTC media connection fully established");
+                        println!("Quick: Ready for RTP/RTCP media transmission");
+                        println!("Quick: =============================================");
                         let _ = event_tx.send(QuickEvent::Connected);
                     }
                     str0m::Event::IceConnectionStateChange(state) => {
                         println!("Quick: ICE State Change: {:?}", state);
+                        match state {
+                            str0m::IceConnectionState::Connected | str0m::IceConnectionState::Completed => {
+                                println!("Quick: ICE connection ready, waiting for DTLS handshake...");
+                            }
+                            _ => {}
+                        }
                         let _ = event_tx.send(QuickEvent::IceState(format!("{:?}", state)));
                     }
                     str0m::Event::MediaData(data) => {

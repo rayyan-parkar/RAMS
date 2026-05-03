@@ -59,6 +59,7 @@ impl RAMSCore {
         
         match &output {
             str0m::Output::Event(str0m::Event::Connected) => {
+                println!("RAMSCore: DTLS handshake completed successfully, WebRTC connection established");
                 if self.signaling_handler.state == SignalingState::TricklingIce {
                     println!("RAMSCore: connected event observed, moving signaling state to Stable");
                     let _ = self.signaling_handler.advance(SignalingState::Stable);
@@ -78,6 +79,12 @@ impl RAMSCore {
             }
             str0m::Output::Event(str0m::Event::IceConnectionStateChange(state)) => {
                 println!("RAMSCore: ICE Connection State Change: {:?}", state);
+                match state {
+                    str0m::IceConnectionState::Connected | str0m::IceConnectionState::Completed => {
+                        println!("RAMSCore: ICE connection ready, DTLS handshake will now initiate");
+                    }
+                    _ => {}
+                }
             }
             _ => {}
         }
