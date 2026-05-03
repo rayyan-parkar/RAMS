@@ -148,13 +148,11 @@
       const remoteCtx = remoteCanvas.getContext('2d');
       const remoteCanvasStream = remoteCanvas.captureStream(30);
       
-      // Defer binding until DOM element is available (Svelte bind:this runs after tick)
       function tryBindRemoteVideo() {
         if (remoteVideoRef) {
           remoteVideoRef.srcObject = remoteCanvasStream;
           remoteVideoRef.play().catch(e => log(`[WARN] video.play() failed: ${e}`));
           log('[OK] Remote video element bound and play() called');
-          
           if (localStream) setupVisualizers(localStream, remoteVideoRef);
         } else {
           requestAnimationFrame(tryBindRemoteVideo);
@@ -162,26 +160,29 @@
       }
       tryBindRemoteVideo();
 
+      let videoDecoder: any = null;
       let remoteFrameCount = 0;
-      const videoDecoder = new (window as any).VideoDecoder({
-        output: (frame: any) => {
-          remoteFrameCount++;
-          if (remoteFrameCount === 1 || remoteFrameCount % 100 === 0) {
-            log(`[DEC] SUCCESS: Decoded frame #${remoteFrameCount} (${frame.displayWidth}x${frame.displayHeight})`);
+
+      function createVideoDecoder() {
+        videoDecoder = new (window as any).VideoDecoder({
+          output: (frame: any) => {
+            remoteFrameCount++;
+            if (remoteFrameCount === 1 || remoteFrameCount % 100 === 0) {
+              log(`[DEC] Decoded frame #${remoteFrameCount} (${frame.displayWidth}x${frame.displayHeight})`);
+            }
+            if (remoteCtx) {
+              remoteCtx.drawImage(frame, 0, 0, remoteCanvas.width, remoteCanvas.height);
+            }
+            frame.close();
+          },
+          error: (e: any) => {
+            log(`[ERR] VideoDecoder CRASH: ${e.message}. Re-initializing...`);
+            createVideoDecoder(); // Auto-recover
           }
-          if (remoteCtx) {
-            remoteCtx.drawImage(frame, 0, 0, remoteCanvas.width, remoteCanvas.height);
-          }
-          frame.close();
-        },
-        error: (e: any) => log(`[ERR] VideoDecoder: ${e.name} - ${e.message}`)
-      });
-      try {
+        });
         videoDecoder.configure({ codec: 'vp8' });
-        log(`[OK] VideoDecoder configured. Initial state: ${videoDecoder.state}`);
-      } catch (e) {
-        log(`[ERR] VideoDecoder config failed: ${e}`);
       }
+      createVideoDecoder();
 
       if (!audioCtx) {
         audioCtx = new window.AudioContext({ sampleRate: 48000 });
@@ -202,20 +203,12 @@
         },
         error: (e: any) => log(`[ERR] AudioDecoder: ${e}`)
       });
-      try {
-        audioDecoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 2 });
-        log('[OK] AudioDecoder configured for Opus (2-ch)');
-      } catch (e) {
-        log(`[ERR] AudioDecoder config failed: ${e}`);
-      }
-
-      // Ensure AudioContext is active
-      if (audioCtx.state === 'suspended') {
-        audioCtx.resume();
-      }
+      audioDecoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1 });
 
       let rxVideoChunks = 0;
       let rxAudioChunks = 0;
+      let videoOffset = -1;
+
       await listen('webrtc-media-data', (event) => {
         const [kind, data] = event.payload as [string, number[]];
         const uint8 = new Uint8Array(data);
@@ -224,40 +217,39 @@
         if (kind === 'video') {
           rxVideoChunks++;
           
-          if (rxVideoChunks === 1) {
-            const head = Array.from(uint8.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ');
-            log(`[PROBE] First video chunk: ${uint8.length} bytes. Head: [${head}]`);
+          // DYNAMIC BITSTREAM ALIGNMENT
+          // We search for the VP8 Keyframe signature [9d 01 2a] to find the true frame start
+          if (videoOffset === -1 || (rxVideoChunks % 300 === 0)) { 
+            for (let i = 0; i < 20; i++) {
+              if (uint8[i] === 0x9d && uint8[i+1] === 0x01 && uint8[i+2] === 0x2a) {
+                // The VP8 Uncompressed Header (frame type) is 1 byte before the signature
+                videoOffset = i - 1;
+                log(`[SYS] Bitstream Lock: Found VP8 signature at index ${i}. Offset set to ${videoOffset}`);
+                break;
+              }
+            }
           }
           
-          if (rxVideoChunks % 100 === 0) {
-            log(`[RX] Received ${rxVideoChunks} video chunks. Decoder state: ${videoDecoder.state}`);
-          }
+          if (videoOffset === -1) return; // Haven't found a keyframe yet, wait for one
 
-          // VP8 Bitstream Finder: Look for the 3-byte keyframe header [?? 9d 01 2a]
-          let offset = 0;
-          if (uint8[0] === 0x30 && uint8[3] === 0x9d && uint8[4] === 0x01) {
-            offset = 2; 
-          }
-          
-          const bitstream = uint8.slice(offset);
+          const bitstream = uint8.slice(videoOffset);
           const isKeyframe = (bitstream[0] & 0x01) === 0;
 
           try {
-            const EncodedVideoChunkCtor = (window as any).EncodedVideoChunk;
-            videoDecoder.decode(new EncodedVideoChunkCtor({
-              type: isKeyframe ? 'key' : 'delta',
-              timestamp: performance.now() * 1000,
-              data: bitstream
-            }));
+            if (videoDecoder && videoDecoder.state === 'configured') {
+              videoDecoder.decode(new (window as any).EncodedVideoChunk({
+                type: isKeyframe ? 'key' : 'delta',
+                timestamp: performance.now() * 1000,
+                data: bitstream
+              }));
+            }
           } catch (e) {
-            log(`[ERR] Video chunk #${rxVideoChunks} decode call fail: ${e}`);
+            log(`[ERR] Decode call failed: ${e}`);
           }
         } else if (kind === 'audio') {
           rxAudioChunks++;
-          if (rxAudioChunks % 500 === 0) log(`[RX] Received ${rxAudioChunks} audio chunks`);
           try {
-            const EncodedAudioChunkCtor = (window as any).EncodedAudioChunk;
-            audioDecoder.decode(new EncodedAudioChunkCtor({
+            audioDecoder.decode(new (window as any).EncodedAudioChunk({
               type: 'key',
               timestamp: performance.now() * 1000,
               data: uint8
