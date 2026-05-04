@@ -79,7 +79,6 @@
     if (localStream) {
       localStream.getAudioTracks().forEach(t => t.enabled = !isMuted);
     }
-    log(`[SYS] Microphone ${isMuted ? 'MUTED' : 'UNMUTED'}`);
   }
 
   function toggleVideo() {
@@ -87,58 +86,37 @@
     if (localStream) {
       localStream.getVideoTracks().forEach(t => t.enabled = !isVideoOff);
     }
-    log(`[SYS] Video ${isVideoOff ? 'OFF' : 'ON'}`);
   }
 
   function auditEnvironment() {
-    const check = (name: string) => !!(window as any)[name];
-    log(`[AUDIT] WebCodecs classes: 
-      VideoEncoder: ${check('VideoEncoder')}, 
-      VideoDecoder: ${check('VideoDecoder')}, 
-      AudioEncoder: ${check('AudioEncoder')}, 
-      AudioDecoder: ${check('AudioDecoder')},
-      EncodedVideoChunk: ${check('EncodedVideoChunk')},
-      EncodedAudioChunk: ${check('EncodedAudioChunk')},
-      VideoFrame: ${check('VideoFrame')},
-      AudioData: ${check('AudioData')}`);
-    
     if (typeof (window as any).VideoDecoder === 'undefined') {
-      log('[ERR] VideoDecoder is NOT supported in this browser environment!');
+      log('[DECODER] ERROR: VideoDecoder not supported!');
+    } else {
+      log('[DECODER] VideoDecoder available.');
     }
   }
 
   async function leaveRoom() {
-    log('[SYS] Disconnecting...');
     if (visualizerFrameId) cancelAnimationFrame(visualizerFrameId);
     if (audioCtx) audioCtx.close();
-    
     try {
       await invoke('close_call');
-      log('[OK] Call closed.');
     } catch (e) {
-      log(`[WARN] Failed to gracefully close call: ${e}`);
+      // silent
     }
-    
     window.location.reload();
   }
 
   async function connect() {
     connectionState = 'CONNECTING';
-    log(`[SYS] establishing link to ${sigServer}...`);
-    log(`[SYS] authenticating room key: ${roomId}`);
     
     try {
-      // Initialize AudioContext at the VERY BEGINNING of the click handler
-      // to ensure we capture the user gesture before any 'await' calls.
       if (!audioCtx) {
         audioCtx = new window.AudioContext({ sampleRate: 48000 });
-        log(`[SYS] AudioContext created, state=${audioCtx.state}`);
       }
       if (audioCtx.state === 'suspended') {
-        audioCtx.resume().then(() => log(`[SYS] AudioContext resumed, state=${audioCtx?.state}`));
+        audioCtx.resume().catch(() => {});
       }
-
-      log(`[SYS] WebCodecs Check: VideoEncoder=${!!(window as any).VideoEncoder}, AudioEncoder=${!!(window as any).AudioEncoder}`);
       
       // --- EVENT LISTENERS (Persistent) ---
       const { listen } = await import('@tauri-apps/api/event');
@@ -169,8 +147,8 @@
       function tryBindRemoteVideo() {
         if (remoteVideoRef) {
           remoteVideoRef.srcObject = remoteCanvasStream;
-          remoteVideoRef.play().catch(e => log(`[WARN] video.play() failed: ${e}`));
-          log('[OK] Remote video element bound and play() called');
+          remoteVideoRef.play().catch(() => {});
+          // Remote video element ready
           if (localStream) setupVisualizers(localStream, remoteVideoRef);
         } else {
           requestAnimationFrame(tryBindRemoteVideo);
@@ -199,7 +177,7 @@
         const d = new Uint8Array(desc);
         const sps: Uint8Array[] = [];
         const pps: Uint8Array[] = [];
-        if (d.length < 7) { log(`[H264] description too short: ${d.length} bytes`); return { sps, pps }; }
+        if (d.length < 7) { return { sps, pps }; }
         // AVCDecoderConfigurationRecord layout:
         // byte 0: configurationVersion (always 1)
         // byte 5 lower 5 bits: numSPS
@@ -214,7 +192,7 @@
           const len = (d[offset] << 8) | d[offset + 1]; offset += 2;
           pps.push(d.slice(offset, offset + len)); offset += len;
         }
-        log(`[H264] Parsed description: ${numSPS} SPS (${sps.map(s=>s.length+'B').join(',')}), ${numPPS} PPS (${pps.map(p=>p.length+'B').join(',')})`);
+
         return { sps, pps };
       }
 
@@ -239,7 +217,7 @@
           const naluLen = (avcc[pos] << 24) | (avcc[pos+1] << 16) | (avcc[pos+2] << 8) | avcc[pos+3];
           pos += 4;
           if (naluLen <= 0 || pos + naluLen > avcc.length) {
-            log(`[H264] AVCC parse error at pos ${pos-4}: naluLen=${naluLen}, remaining=${avcc.length - pos}`);
+
             break;
           }
           const nt = nalType(avcc[pos]);
@@ -370,8 +348,10 @@
         videoDecoder = new (window as any).VideoDecoder({
           output: (frame: any) => {
             remoteFrameCount++;
-            if (remoteFrameCount === 1 || remoteFrameCount % 100 === 0) {
-              log(`[DEC] ✓ Decoded frame #${remoteFrameCount} (${frame.displayWidth}x${frame.displayHeight})`);
+            if (remoteFrameCount === 1) {
+              log(`[DECODER] ✓ First frame decoded (${frame.displayWidth}x${frame.displayHeight})`);
+            } else if (remoteFrameCount % 500 === 0) {
+              log(`[DECODER] Frame #${remoteFrameCount}`);
             }
             if (remoteCtx) {
               remoteCtx.drawImage(frame, 0, 0, remoteCanvas.width, remoteCanvas.height);
@@ -380,17 +360,15 @@
           },
           error: (e: any) => {
             decoderCrashCount++;
-            log(`[ERR] VideoDecoder error #${decoderCrashCount}: name=${e.name}, message="${e.message}", state=${videoDecoder?.state}`);
+            log(`[DECODER-ERROR] Crash #${decoderCrashCount}: ${e.name}: ${e.message}`);
             if (decoderCrashCount < 20) {
               setTimeout(() => createVideoDecoder(), 100);
             } else if (decoderCrashCount === 20) {
-              log('[ERR] VideoDecoder has crashed 20 times. Giving up.');
+              log('[DECODER-ERROR] FATAL: Decoder crashed 20 times. Giving up.');
             }
           }
         });
-        // We don't configure the decoder yet! We must wait for the first IDR keyframe
-        // to extract the AVCC description, and then call configure() dynamically.
-        log(`[DEC] VideoDecoder created, state=${videoDecoder.state}, waiting for description...`);
+        log('[DECODER] Instance created, waiting for keyframe...');
       }
       createVideoDecoder();
 
@@ -417,7 +395,7 @@
           { name: 'Annex-B (hardware)', accel: 'prefer-hardware', useAVCC: false },
         ];
 
-        // Collect encoded chunks and metadata first
+        // Collect encoded chunks and the decoder configuration metadata first
         let encodedChunks: { type: string, timestamp: number, data: Uint8Array, desc?: ArrayBuffer }[] = [];
 
         const testEncoder = new (window as any).VideoEncoder({
@@ -425,24 +403,21 @@
             const raw = new Uint8Array(chunk.byteLength);
             chunk.copyTo(raw);
             const desc = metadata?.decoderConfig?.description;
-            const descBuf = desc ? (desc instanceof ArrayBuffer ? desc : new Uint8Array(desc).buffer) : undefined;
-            const head = Array.from(raw.slice(0, 20)).map((b: number) => b.toString(16).padStart(2, '0')).join(' ');
-            const fmt = isAnnexB(raw) ? 'Annex-B' : 'AVCC';
-            log(`[SELF-TEST] Encoded: ${chunk.type}, ${raw.length}B, fmt=${fmt}, desc=${descBuf ? descBuf.byteLength + 'B' : 'none'}, hex=[${head}]`);
-            if (descBuf) {
-              const descHex = Array.from(new Uint8Array(descBuf).slice(0, 20)).map((b: number) => b.toString(16).padStart(2, '0')).join(' ');
-              log(`[SELF-TEST] Description hex: [${descHex}], lengthSize=${((new Uint8Array(descBuf))[4] & 0x03) + 1}`);
-            }
-            encodedChunks.push({ type: chunk.type, timestamp: chunk.timestamp, data: raw, desc: descBuf });
+            encodedChunks.push({
+              type: chunk.type,
+              timestamp: chunk.timestamp,
+              data: raw,
+              desc: desc ? (desc instanceof ArrayBuffer ? desc : (desc.buffer || desc)) : undefined
+            });
           },
-          error: (e: any) => log(`[SELF-TEST] Encode error: ${e.name}: ${e.message}`)
+          error: (e: any) => {}
         });
-        testEncoder.configure({ codec: 'avc1.42001f', width: 160, height: 120, bitrate: 500_000, latencyMode: 'realtime' });
+        testEncoder.configure({ codec: 'avc1.42001f', width: 160, height: 120, bitrate: 500_000, latencyMode: 'realtime', hardwareAcceleration: 'prefer-hardware' });
         testEncoder.encode(testFrame, { keyFrame: true });
         testFrame.close();
         await testEncoder.flush();
         testEncoder.close();
-        log(`[SELF-TEST] Encoder produced ${encodedChunks.length} chunk(s)`);
+
 
         // Now try each decode strategy
         for (const strat of strategies) {
@@ -457,12 +432,13 @@
               let configObj: any = { codec: 'avc1.42001f', hardwareAcceleration: strat.accel };
               let feedData: Uint8Array;
 
-              if (strat.useAVCC && chunk.desc) {
-                // AVCC mode: pass description, feed raw AVCC data
+              if (chunk.desc) {
                 configObj.description = chunk.desc;
+              }
+
+              if (strat.useAVCC) {
                 feedData = chunk.data;
               } else {
-                // Annex-B mode: convert AVCC to Annex-B, no description
                 feedData = isAnnexB(chunk.data) ? chunk.data : avccToAnnexB(chunk.data);
               }
 
@@ -476,12 +452,6 @@
 
             await dec.flush();
             dec.close();
-            const result = decoded ? '✓ PASS' : '✗ FAIL (no output)';
-            log(`[SELF-TEST] ${strat.name}: ${result}`);
-            if (decoded) {
-              log(`[SELF-TEST] ✓ Working strategy found: ${strat.name}`);
-              break; // found one that works
-            }
           } catch (e: any) {
             log(`[SELF-TEST] ${strat.name}: ✗ FAIL (${e.name}: ${e.message})`);
           }
@@ -504,8 +474,8 @@
           }
 
           decodedAudioCount++;
-          if (decodedAudioCount <= 10) {
-            log(`[DEC-AUDIO #${decodedAudioCount}] ${audioData.numberOfFrames} frames, timestamp=${audioData.timestamp}`);
+          if (decodedAudioCount === 1) {
+            log('[DECODER] Audio decode: first frame received');
           }
 
           const buffer = audioCtx.createBuffer(1, audioData.numberOfFrames, audioData.sampleRate);
@@ -557,39 +527,29 @@
 
         if (kind === 'video') {
           rxVideoChunks++;
-          
-          if (rxVideoChunks <= 3) {
-            const head = Array.from(uint8.slice(0, 24)).map(b => b.toString(16).padStart(2, '0')).join(' ');
-            const format = isAnnexB(uint8) ? 'Annex-B' : 'AVCC';
-            const nalTypes = isAnnexB(uint8) ? listAnnexBNalTypes(uint8) : ['(AVCC - not parsed)'];
-            log(`[RX #${rxVideoChunks}] ${uint8.length} bytes, format=${format}, NALs=[${nalTypes.join(', ')}], hex=[${head}]`);
-          }
-
           const isIDR = containsIDR(uint8);
           
           if (waitingForKeyframe) {
             if (!isIDR) {
-              if (rxVideoChunks <= 5) log(`[RX] Skipping non-IDR frame while waiting for keyframe (frame #${rxVideoChunks})`);
-              return; // Don't decode until we get an IDR
+              if (rxVideoChunks === 1) log('[DECODER] Waiting for keyframe...');
+              return;
             }
             waitingForKeyframe = false;
-            const nalTypes = listAnnexBNalTypes(uint8);
-            log(`[RX] ✓ Got IDR keyframe at frame #${rxVideoChunks}, NALs=[${nalTypes.join(', ')}], ${uint8.length} bytes`);
+            log(`[DECODER] ✓ Keyframe received (frame #${rxVideoChunks}, ${uint8.length} bytes)`);
             
             // WebKitGTK WebCodecs STRICTLY requires AVCC description to configure the decoder!
             // We must extract SPS and PPS from this Annex-B IDR keyframe to build the description.
             const newDesc = createAVCCDescriptionFromAnnexB(uint8);
             if (newDesc) {
               currentDescBuf = newDesc;
-              const descHex = Array.from(new Uint8Array(currentDescBuf).slice(0, 20)).map(b => b.toString(16).padStart(2, '0')).join(' ');
-              log(`[RX] Synthesized AVCC description (${currentDescBuf.byteLength}B), hex=[${descHex}]`);
+              log(`[DECODER] Description extracted (${currentDescBuf.byteLength}B)`);
               
               videoDecoder.configure({
                 codec: 'avc1.42001f',
-                hardwareAcceleration: 'prefer-software',
+                hardwareAcceleration: 'prefer-hardware',
                 description: currentDescBuf
               });
-              log(`[RX] Decoder configured dynamically, state=${videoDecoder.state}`);
+              log('[DECODER] Configured with hardware acceleration enabled');
             } else {
               log(`[ERR] Failed to extract SPS/PPS from IDR frame! Cannot configure decoder.`);
               waitingForKeyframe = true; // Wait for the next one
@@ -610,17 +570,12 @@
                 timestamp: videoTimestamp,
                 data: avccData
               }));
-            } else {
-              if (rxVideoChunks % 100 === 0) log(`[WARN] Decoder not ready: state=${videoDecoder?.state}`);
             }
           } catch (e: any) {
-            log(`[ERR] Decode threw: ${e.name}: "${e.message}", dataLen=${uint8.length}, isIDR=${isIDR}`);
+            log(`[DECODER-ERROR] Decode failed: ${e.name}: ${e.message}`);
           }
         } else if (kind === 'audio') {
           rxAudioChunks++;
-          if (rxAudioChunks <= 10) {
-            log(`[RX-AUDIO #${rxAudioChunks}] ${uint8.length} bytes, decoder=${audioDecoder.state}, audioCtx=${audioCtx?.state}`);
-          }
           try {
             // Use a sequence-based timestamp to ensure they are unique and monotonic
             // even if multiple packets arrive in the same tick.
@@ -633,7 +588,7 @@
               data: uint8
             }));
           } catch (e) {
-            if (rxAudioChunks % 500 === 0) log(`[ERR] Audio decode fail: ${e}`);
+            // audio decode error - silent
           }
         }
       });
