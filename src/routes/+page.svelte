@@ -27,6 +27,9 @@
   let remoteAudioLevel = $state(0);
   let audioCtx: AudioContext | null = null;
   let remoteAnalyser: AnalyserNode | null = null;
+  let remoteDest: MediaStreamAudioDestinationNode | null = null;
+  let debugAudioEl: HTMLAudioElement | null = null;
+  let remoteGain: GainNode | null = null;
   let visualizerFrameId: number;
   
 
@@ -107,7 +110,32 @@
         remoteAnalyser.fftSize = 256;
         // Note: We no longer capture from rVideo because it's a canvas stream with no audio.
         // Instead, the AudioDecoder will connect directly to this remoteAnalyser.
-        remoteAnalyser.connect(audioCtx.destination);
+        try {
+          if (!remoteGain) remoteGain = audioCtx.createGain();
+          remoteGain.gain.value = 1.0;
+          if (!remoteDest) {
+            try {
+              remoteDest = audioCtx.createMediaStreamDestination();
+              if (!debugAudioEl) {
+                debugAudioEl = document.createElement('audio');
+                debugAudioEl.autoplay = true;
+                debugAudioEl.muted = false;
+                debugAudioEl.style.display = 'none';
+                debugAudioEl.srcObject = remoteDest.stream;
+                document.body.appendChild(debugAudioEl);
+              }
+            } catch (e) {
+              remoteDest = null;
+            }
+          }
+          remoteAnalyser.connect(remoteGain);
+          try { remoteGain.connect(audioCtx.destination); } catch (e) {}
+          if (remoteDest) {
+            try { remoteGain.connect(remoteDest); } catch (e) {}
+          }
+        } catch (e) {
+          try { remoteAnalyser.connect(audioCtx.destination); } catch (e2) {}
+        }
         log('[VIS] remoteAnalyser created (setupVisualizers)');
       }
 
@@ -528,11 +556,64 @@
         try {
           remoteAnalyser = audioCtx.createAnalyser();
           remoteAnalyser.fftSize = 256;
-          remoteAnalyser.connect(audioCtx.destination);
+          // Create a gain node so we can control/inspect remote audio volume
+          remoteGain = audioCtx.createGain();
+          remoteGain.gain.value = 1.0;
+
+          // Create a MediaStream destination and a hidden <audio> element
+          // so we can force-audible output for debugging on systems where
+          // the default audio routing may be problematic (e.g. PipeWire configs).
+          try {
+            remoteDest = audioCtx.createMediaStreamDestination();
+            debugAudioEl = document.createElement('audio');
+            debugAudioEl.autoplay = true;
+            debugAudioEl.muted = false;
+            debugAudioEl.style.display = 'none';
+            debugAudioEl.srcObject = remoteDest.stream;
+            document.body.appendChild(debugAudioEl);
+          } catch (e) {
+            // Non-fatal; continue without debug audio element
+            log('[WARN] Could not create debug audio element: ' + e);
+            remoteDest = null;
+            debugAudioEl = null;
+          }
+
+          // Connect analyser -> gain -> (destination + debug stream)
+          remoteAnalyser.connect(remoteGain);
+          try { remoteGain.connect(audioCtx.destination); } catch (e) {}
+          if (remoteDest) {
+            try { remoteGain.connect(remoteDest); } catch (e) {}
+          }
+
           log('[VIS] remoteAnalyser created (early)');
         } catch (e) {
           log('[WARN] Could not create remoteAnalyser early: ' + e);
         }
+      }
+
+      // Play a short low-volume test tone to verify the output chain (one-shot).
+      try {
+        if (audioCtx && audioCtx.state !== 'closed') {
+          const testOsc = audioCtx.createOscillator();
+          const testGain = audioCtx.createGain();
+          testOsc.frequency.value = 440;
+          testGain.gain.value = 0.01; // very quiet
+          if (remoteGain) {
+            testOsc.connect(testGain);
+            testGain.connect(remoteGain);
+          } else {
+            testOsc.connect(testGain);
+            testGain.connect(audioCtx.destination);
+          }
+          testOsc.start();
+          setTimeout(() => {
+            try { testOsc.stop(); } catch (e) {}
+            try { testOsc.disconnect(); testGain.disconnect(); } catch (e) {}
+            log('[VIS] Test tone played');
+          }, 150);
+        }
+      } catch (e) {
+        log('[WARN] Test tone failed: ' + e);
       }
 
       let audioPlaybackTime = 0;
@@ -561,15 +642,26 @@
           const source = audioCtx.createBufferSource();
           source.buffer = buffer;
           
-          // Connect to destination AND the visualizer analyser (if present)
-          source.connect(audioCtx.destination);
+          // Prefer routing decoded audio through the analyser so the visualiser
+          // sees the signal. If analyser isn't available, fall back to direct
+          // destination playback.
           if (remoteAnalyser) {
-            source.connect(remoteAnalyser);
-            if (decodedAudioCount <= 3 || decodedAudioCount % 100 === 0) {
-              log(`[VIS] Connected decoded audio frame #${decodedAudioCount} to remoteAnalyser`);
+            try {
+              source.connect(remoteAnalyser);
+              if (decodedAudioCount <= 3 || decodedAudioCount % 100 === 0) {
+                log(`[VIS] Connected decoded audio frame #${decodedAudioCount} to remoteAnalyser`);
+              }
+            } catch (e) {
+              // If connecting to analyser fails, fallback to direct destination
+              try { source.connect(audioCtx.destination); } catch (e2) {}
+              if (decodedAudioCount <= 3) log('[WARN] Failed to connect to remoteAnalyser, fell back to destination');
             }
-          } else if (decodedAudioCount <= 3) {
-            log('[WARN] remoteAnalyser not available when audio decoded');
+          } else {
+            // No analyser available yet — play directly so user hears audio.
+            try { source.connect(audioCtx.destination); } catch (e) {}
+            if (decodedAudioCount <= 3) {
+              log('[WARN] remoteAnalyser not available when audio decoded — playing direct');
+            }
           }
 
           // Schedule playback sequentially to avoid overlapping/gaps
