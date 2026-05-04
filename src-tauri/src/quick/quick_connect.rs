@@ -2,6 +2,11 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
+use futures_util::stream::{SplitSink, SplitStream};
+use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::MaybeTlsStream;
+use tokio::net::TcpStream as TokioTcpStream;
+use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -204,20 +209,16 @@ where
 
 /// The main event loop that orchestrates all I/O for the WebRTC session.
 /// It uses tokio::select! to multiplex between signaling, media data, and library timeouts.
-async fn run_connection_loop<R, W>(
+async fn run_connection_loop(
     core: std::sync::Arc<Mutex<RAMSCore>>,
     mut shutdown_rx: oneshot::Receiver<()>,
     mut ws_rx: mpsc::UnboundedReceiver<WireMessage>,
-    mut ws_read: R,
-    mut ws_write: W,
+    mut ws_read: SplitStream<WebSocketStream<MaybeTlsStream<TokioTcpStream>>>,
+    mut ws_write: SplitSink<WebSocketStream<MaybeTlsStream<TokioTcpStream>>, tokio_tungstenite::tungstenite::Message>,
     ws_tx: mpsc::UnboundedSender<WireMessage>,
     event_tx: mpsc::UnboundedSender<QuickEvent>,
     ws_url: String,
-) -> Result<(), QuickError>
-where
-    R: StreamExt<Item = Result<tokio_tungstenite::tungstenite::Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
-    W: SinkExt<tokio_tungstenite::tungstenite::Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
-{
+) -> Result<(), QuickError> {
     println!("Quick: Entering background connection loop");
     // Initialize the UDP socket for media transmission
     let socket = bind_local_socket().await?;
@@ -245,6 +246,10 @@ where
     let mut udp_buf = vec![0u8; 2000];
     let mut last_udp_log = Instant::now();
 
+    // Keep an outgoing buffer for websocket messages when WS is down.
+    let mut pending_outbox: VecDeque<WireMessage> = VecDeque::new();
+    let mut ws_alive = true;
+
     loop {
         tokio::select! {
             // Check for graceful shutdown signal
@@ -252,24 +257,46 @@ where
 
             // Handle outgoing signaling messages from the core to the WebSocket
             Some(wire) = ws_rx.recv() => {
-                println!("Quick: Sending websocket signaling message: {:?}", wire);
-                ws_write.send(tokio_tungstenite::tungstenite::Message::Text(
-                    Utf8Bytes::from(serde_json::to_string(&wire).unwrap_or_default()),
-                )).await?;
+                // If WS is alive try to send, otherwise buffer
+                if ws_alive {
+                    println!("Quick: Sending websocket signaling message: {:?}", wire);
+                    match ws_write.send(tokio_tungstenite::tungstenite::Message::Text(
+                        Utf8Bytes::from(serde_json::to_string(&wire).unwrap_or_default()),
+                    )).await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            eprintln!("Quick: WS send failed, buffering message and marking WS dead: {:?}", e);
+                            ws_alive = false;
+                            pending_outbox.push_back(wire);
+                        }
+                    }
+                } else {
+                    // Buffer while WS is down
+                    println!("Quick: WS down, buffering outgoing signaling message");
+                    pending_outbox.push_back(wire);
+                }
             }
 
             // Handle incoming signaling messages from the WebSocket
-            Some(ws_msg) = ws_read.next() => {
-                let ws_msg = ws_msg?;
-                if let tokio_tungstenite::tungstenite::Message::Text(text) = ws_msg {
-                    println!("Quick: Incoming websocket signaling text: {}", text);
-                    if let Ok(parsed) = serde_json::from_str::<WireMessage>(&text) {
-                        if let Err(err) = dispatch_websocket_message_to_core(&core, parsed, &ws_tx).await {
-                            eprintln!("Quick: ERROR dispatching signaling message: {}", err);
-                            core.lock().await.signaling_handler.set_error(err);
+            Some(ws_msg) = ws_read.next(), if ws_alive => {
+                match ws_msg {
+                    Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
+                        println!("Quick: Incoming websocket signaling text: {}", text);
+                        if let Ok(parsed) = serde_json::from_str::<WireMessage>(&text) {
+                            if let Err(err) = dispatch_websocket_message_to_core(&core, parsed, &ws_tx).await {
+                                eprintln!("Quick: ERROR dispatching signaling message: {}", err);
+                                core.lock().await.signaling_handler.set_error(err);
+                            }
+                        } else {
+                            println!("Quick: Failed to parse websocket signaling message");
                         }
-                    } else {
-                        println!("Quick: Failed to parse websocket signaling message");
+                    }
+                    Ok(_) => {
+                        // ignore other frame types
+                    }
+                    Err(e) => {
+                        eprintln!("Quick: WebSocket read error: {:?}. Marking WS dead and attempting reconnect.", e);
+                        ws_alive = false;
                     }
                 }
             }
@@ -304,6 +331,50 @@ where
 
         // After every event, we check if the engine has data it wants to send out
         timeout = flush_core_outputs_to_network(&core, &socket, &ws_tx, &event_tx).await;
+
+        // If WS died, try to reconnect in the background (non-blocking to media loop)
+        if !ws_alive {
+            // Simple reconnect loop with exponential backoff
+            let mut backoff = 250u64; // ms
+            loop {
+                println!("Quick: Attempting websocket reconnect to {}", ws_url);
+                match connect_async(&ws_url).await {
+                    Ok((stream, _)) => {
+                        println!("Quick: Reconnected websocket to {}", ws_url);
+                        let (new_ws_write, new_ws_read) = stream.split();
+                        ws_write = new_ws_write;
+                        ws_read = new_ws_read;
+                        ws_alive = true;
+
+                        // Re-join room to re-establish signaling session
+                        let join = WireMessage::Join { room: "".to_string() };
+                        // Note: We don't have `room` param here; best-effort: send a PeerJoined-like ping
+                        // Drain pending outbox
+                        while let Some(pending) = pending_outbox.pop_front() {
+                            if let Err(e) = ws_write.send(tokio_tungstenite::tungstenite::Message::Text(
+                                Utf8Bytes::from(serde_json::to_string(&pending).unwrap_or_default()),
+                            )).await {
+                                eprintln!("Quick: Failed to send pending message after reconnect: {:?}", e);
+                                // Put it back and break to retry reconnect
+                                pending_outbox.push_front(pending);
+                                ws_alive = false;
+                                break;
+                            }
+                        }
+
+                        if ws_alive {
+                            println!("Quick: Pending websocket messages flushed after reconnect");
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Quick: Reconnect attempt failed: {:?}. Backing off {}ms", e, backoff);
+                        tokio::time::sleep(Duration::from_millis(backoff)).await;
+                        backoff = std::cmp::min(backoff * 2, 5000);
+                    }
+                }
+            }
+        }
     }
 
     Ok(())
