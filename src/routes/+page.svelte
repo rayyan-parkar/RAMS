@@ -33,33 +33,16 @@
   let visualizerFrameId: number;
   
 
-  // Robust fullscreen logic using browser Fullscreen API
+  // Robust fullscreen logic using pure CSS class toggling
+  // Bypasses native requestFullscreen() which causes transient activation & RangeBuffer errors in WebKitGTK
   function toggleFullscreen() {
-    if (!isFullscreen) {
-      // Enter fullscreen
-      if (fullscreenContainer && fullscreenContainer.requestFullscreen) {
-        fullscreenContainer.requestFullscreen();
-      }
-    } else {
-      // Exit fullscreen
-      if (document.fullscreenElement) {
-        document.exitFullscreen();
-      }
-    }
-    // showExitButton will be handled by event
+    isFullscreen = !isFullscreen;
     if (exitButtonTimeout) clearTimeout(exitButtonTimeout);
+    if (!isFullscreen) {
+      showExitButton = false;
+    }
   }
 
-  // Sync Svelte state with browser fullscreen
-  function handleFullscreenChange() {
-    isFullscreen = !!document.fullscreenElement;
-    showExitButton = false;
-    if (!isFullscreen && exitButtonTimeout) {
-      clearTimeout(exitButtonTimeout);
-      exitButtonTimeout = null;
-    }
-  }
-  
   function handleMouseMove() {
     if (isFullscreen) {
       showExitButton = true;
@@ -69,14 +52,6 @@
       }, 3000); // Hide after 3 seconds
     }
   }
-  // Mount/unmount fullscreen event listener
-  onMount(() => {
-    document.addEventListener('fullscreenchange', handleFullscreenChange);
-    return () => {
-      document.removeEventListener('fullscreenchange', handleFullscreenChange);
-      if (exitButtonTimeout) clearTimeout(exitButtonTimeout);
-    };
-  });
 
   function log(msg: string) {
     logs = [...logs, msg];
@@ -1057,20 +1032,24 @@
           <span>> LOCAL_TX [H.264]</span>
           <video bind:this={localVideoRef} autoplay muted playsinline class="glow"></video>
           <div class="mic-visualizer">MIC: {getAsciiBar(localAudioLevel)}</div>
+          {#if connectionState === 'CONNECTED'}
+            {#if isFullscreen}
+              {#if showExitButton}
+                <button class="exit-fullscreen-btn icon-btn" title="Exit Fullscreen" onclick={toggleFullscreen}>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/></svg>
+                </button>
+              {/if}
+            {:else}
+              <button class="fullscreen-btn icon-btn" title="Fullscreen" onclick={toggleFullscreen}>
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+              </button>
+            {/if}
+          {/if}
         </div>
         <div class="video-box remote">
           <span>> REMOTE_RX [H.264]</span>
           <video bind:this={remoteVideoRef} autoplay playsinline></video>
           <div class="mic-visualizer">VOL: {getAsciiBar(remoteAudioLevel)}</div>
-          {#if connectionState === 'CONNECTED'}
-            {#if isFullscreen}
-              {#if showExitButton}
-                <button class="exit-fullscreen-btn" onclick={toggleFullscreen}>[ EXIT ⊡ ]</button>
-              {/if}
-            {:else}
-              <button class="fullscreen-btn" title="Fullscreen" onclick={toggleFullscreen}>[ ⛶ FULLSCREEN ]</button>
-            {/if}
-          {/if}
         </div>
       </div>
       <div class="media-controls mt-4">

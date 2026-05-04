@@ -271,6 +271,15 @@ video.glow {
   opacity: 1;
 }
 
+.icon-btn {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .media-controls {
   display: flex;
   gap: 1rem;
@@ -315,11 +324,11 @@ button.danger:hover {
 .container.fullscreen-mode .retro-panel::before,
 .container.fullscreen-mode .retro-panel::after,
 .container.fullscreen-mode .ascii-art,
-.container.fullscreen-mode .video-box.local,
+.container.fullscreen-mode .video-box.remote,
 .container.fullscreen-mode .media-controls,
 .container.fullscreen-mode .terminal,
-.container.fullscreen-mode .video-box.remote span,
-.container.fullscreen-mode .video-box.remote .mic-visualizer {
+.container.fullscreen-mode .video-box.local span,
+.container.fullscreen-mode .video-box.local .mic-visualizer {
   display: none !important;
 }
 
@@ -331,7 +340,7 @@ button.danger:hover {
   margin: 0;
 }
 
-.container.fullscreen-mode .video-box.remote {
+.container.fullscreen-mode .video-box.local {
   border: none;
   padding: 0;
   width: 100%;
@@ -342,7 +351,7 @@ button.danger:hover {
   justify-content: center;
 }
 
-.container.fullscreen-mode .video-box.remote video {
+.container.fullscreen-mode .video-box.local video {
   width: 100%;
   height: 100%;
   object-fit: contain;
@@ -366,6 +375,12 @@ button.danger:hover {
   z-index: 1000;
 }
 
+.exit-fullscreen-btn.icon-btn {
+  width: 48px;
+  height: 48px;
+  padding: 0;
+}
+
 .exit-fullscreen-btn:hover {
   background: var(--primary-glow);
   color: var(--bg-color);
@@ -377,6 +392,7 @@ button.danger:hover {
     opacity: 0;
     transform: translate(10px, 10px);
   }
+
   to {
     opacity: 1;
     transform: translate(0, 0);
