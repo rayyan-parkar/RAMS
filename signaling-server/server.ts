@@ -35,8 +35,15 @@ wss.on('connection', (ws: WebSocket) => {
                     type: "joined",
                     room: currentRoom,
                     isInitiator: isInitiator,
+                    stunServers: [
+                        "stun:stun.l.google.com:19302",
+                        "stun:stun1.l.google.com:19302",
+                        "stun:stun2.l.google.com:19302",
+                        "stun:stun3.l.google.com:19302",
+                        "stun:stun4.l.google.com:19302"
+                    ]
                 }));
-                console.log(`[<<] Sent joined response to ${isInitiator ? 'initiator' : 'responder'} for room ${currentRoom}`);
+                console.log(`[<<] Sent joined response to ${isInitiator ? 'initiator' : 'responder'} for room ${currentRoom} (with STUN servers)`);
 
                 // Notify existing peers that someone joined
                 if (!isInitiator) {

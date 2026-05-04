@@ -90,6 +90,8 @@ enum WireMessage {
         room: String,
         #[serde(rename = "isInitiator")]
         is_initiator: bool,
+        #[serde(default)]
+        stun_servers: Vec<String>,
     },
     PeerJoined,
     // Flattened SignalingMessage variants
@@ -142,7 +144,7 @@ pub async fn connect(ws_url: &str, room: &str) -> Result<(QuickConnection, mpsc:
 
     // 2. Negotiate Role (Join Room)
     // We wait for the server to tell us if we are the caller (Initiator) or receiver (Responder)
-    let role = negotiate_signaling_role(&mut ws_read, &mut ws_write, room).await?;
+    let (role, stun_servers) = negotiate_signaling_role(&mut ws_read, &mut ws_write, room).await?;
 
     // 3. Initialize Core and Infrastructure
     // Arc<Mutex<>> is used so both the background loop and the main handle can access the core safely.
@@ -157,7 +159,7 @@ pub async fn connect(ws_url: &str, room: &str) -> Result<(QuickConnection, mpsc:
     let task_ws_url = ws_url.to_string();
     let task_room = room.to_string();
     let ws_task = tokio::spawn(async move {
-        if let Err(e) = run_connection_loop(task_core, shutdown_rx, ws_rx, ws_read, ws_write, ws_tx, task_event_tx, task_ws_url, task_room).await {
+        if let Err(e) = run_connection_loop(task_core, shutdown_rx, ws_rx, ws_read, ws_write, ws_tx, task_event_tx, task_ws_url, task_room, stun_servers).await {
             eprintln!("QuickConnection loop exited with error: {:?}", e);
         }
     });
@@ -174,7 +176,7 @@ async fn negotiate_signaling_role<R, W>(
     ws_read: &mut R,
     ws_write: &mut W,
     room: &str,
-) -> Result<SignalingRole, QuickError>
+) -> Result<(SignalingRole, Vec<String>), QuickError>
 where
     R: StreamExt<Item = Result<tokio_tungstenite::tungstenite::Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
     W: SinkExt<tokio_tungstenite::tungstenite::Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
@@ -190,17 +192,19 @@ where
         if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
             println!("Quick: Received websocket text while negotiating role: {}", text);
             let parsed: WireMessage = serde_json::from_str(&text)?;
-            if let WireMessage::Joined { is_initiator, .. } = parsed {
+            if let WireMessage::Joined { is_initiator, stun_servers, .. } = parsed {
                 println!(
-                    "Quick: Joined room {} as {}",
+                    "Quick: Joined room {} as {} (received {} stun servers)",
                     room,
-                    if is_initiator { "Initiator" } else { "Responder" }
+                    if is_initiator { "Initiator" } else { "Responder" },
+                    stun_servers.len()
                 );
-                return Ok(if is_initiator {
+                let role = if is_initiator {
                     SignalingRole::Initiator
                 } else {
                     SignalingRole::Responder
-                });
+                };
+                return Ok((role, stun_servers));
             }
         }
     }
@@ -220,6 +224,7 @@ async fn run_connection_loop(
     event_tx: mpsc::UnboundedSender<QuickEvent>,
     ws_url: String,
     room: String,
+    stun_servers: Vec<String>,
 ) -> Result<(), QuickError> {
     println!("Quick: Entering background connection loop");
     // Initialize the UDP socket for media transmission
@@ -241,8 +246,8 @@ async fn run_connection_loop(
             drop(core_guard);
         }
     }
-    println!("Quick: Creating local ICE candidate");
-    let local_ip = add_local_candidate(&core, &socket, &ws_tx, &ws_url).await.map_err(QuickError::Protocol)?;
+    println!("Quick: Creating local ICE candidates (host + srflx)");
+    let local_ip = add_local_candidates(&core, &socket, &ws_tx, &ws_url, &stun_servers).await.map_err(QuickError::Protocol)?;
 
     let mut timeout = Instant::now() + Duration::from_millis(100);
     let mut udp_buf = vec![0u8; 2000];
@@ -404,11 +409,12 @@ async fn initialize_local_media(core: &std::sync::Arc<Mutex<RAMSCore>>) -> Resul
     Ok(())
 }
 
-async fn add_local_candidate(
+async fn add_local_candidates(
     core: &std::sync::Arc<Mutex<RAMSCore>>,
     socket: &UdpSocket,
     ws_tx: &mpsc::UnboundedSender<WireMessage>,
     ws_url: &str,
+    stun_servers: &[String],
 ) -> Result<IpAddr, String> {
     let mut addr = socket.local_addr().map_err(|e| e.to_string())?;
     println!("Quick: Local UDP candidate base address before IP patch: {}", addr);
@@ -421,19 +427,36 @@ async fn add_local_candidate(
             addr.set_ip(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)));
         }
     }
-    let candidate = str0m::Candidate::host(addr, "udp").map_err(|e| e.to_string())?;
-    println!("Quick: Created local ICE candidate object: {:?}", candidate);
+    
+    // 1. Add Host Candidate
+    let host_candidate = str0m::Candidate::host(addr, "udp").map_err(|e| e.to_string())?;
+    println!("Quick: Created host ICE candidate: {:?}", host_candidate);
 
     {
         let mut guard = core.lock().await;
-        let _ = guard.rtc.add_local_candidate(candidate.clone());
-        println!("Quick: Added local ICE candidate into str0m RTC");
+        let _ = guard.rtc.add_local_candidate(host_candidate.clone());
     }
 
-    println!("Quick: Sending local ICE candidate: {}", candidate.to_sdp_string());
+    println!("Quick: Sending host ICE candidate: {}", host_candidate.to_sdp_string());
     let _ = ws_tx.send(WireMessage::Candidate {
-        candidate: candidate.to_sdp_string(),
+        candidate: host_candidate.to_sdp_string(),
     });
+
+    // 2. Discover and Add srflx Candidates via STUN
+    if !stun_servers.is_empty() {
+        println!("Quick: Starting STUN candidate discovery via {} servers...", stun_servers.len());
+        let srflx_candidates = discover_srflx_candidates(socket, stun_servers).await;
+        for cand in srflx_candidates {
+            {
+                let mut guard = core.lock().await;
+                let _ = guard.rtc.add_local_candidate(cand.clone());
+            }
+            println!("Quick: Sending srflx ICE candidate: {}", cand.to_sdp_string());
+            let _ = ws_tx.send(WireMessage::Candidate {
+                candidate: cand.to_sdp_string(),
+            });
+        }
+    }
 
     Ok(addr.ip())
 }
@@ -619,5 +642,88 @@ fn get_local_ip(ws_url: &str) -> Option<IpAddr> {
         }
     }
 
+    None
+}
+
+async fn discover_srflx_candidates(
+    socket: &UdpSocket,
+    stun_servers: &[String],
+) -> Vec<str0m::Candidate> {
+    let mut candidates = Vec::new();
+    let local_addr = match socket.local_addr() {
+        Ok(a) => a,
+        Err(_) => return candidates,
+    };
+
+    for stun_server in stun_servers {
+        let stun_addr = stun_server.trim_start_matches("stun:");
+        
+        // Resolve stun_addr to SocketAddr
+        if let Ok(addrs) = tokio::net::lookup_host(stun_addr).await {
+            if let Some(dest) = addrs.into_iter().next() {
+                println!("Quick: Sending STUN Binding Request to {}", dest);
+                
+                // Simple STUN Binding Request (RFC 5389)
+                let mut request = [0u8; 20];
+                request[0..2].copy_from_slice(&0x0001u16.to_be_bytes()); // Binding Request
+                request[4..8].copy_from_slice(&0x2112A442u32.to_be_bytes()); // Magic Cookie
+                // Transaction ID (semi-random)
+                for i in 8..20 { request[i] = (i * 7) as u8; }
+
+                if socket.send_to(&request, dest).await.is_ok() {
+                    let mut buf = [0u8; 1500];
+                    // Wait for response
+                    if let Ok(Ok((n, _))) = tokio::time::timeout(Duration::from_millis(800), socket.recv_from(&mut buf)).await {
+                        if let Some(srflx_addr) = parse_stun_srflx(&buf[..n]) {
+                            println!("Quick: Discovered srflx candidate: {}", srflx_addr);
+                            if let Ok(cand) = str0m::Candidate::server_reflexive(srflx_addr, local_addr, "udp") {
+                                candidates.push(cand);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    candidates
+}
+
+fn parse_stun_srflx(data: &[u8]) -> Option<SocketAddr> {
+    if data.len() < 20 { return None; }
+    // Check if it's a Binding Success Response (0x0101)
+    if data[0..2] != [0x01, 0x01] { return None; }
+    
+    let length = u16::from_be_bytes([data[2], data[3]]) as usize;
+    let mut pos = 20;
+    while pos + 4 <= 20 + length {
+        let attr_type = u16::from_be_bytes([data[pos], data[pos+1]]);
+        let attr_len = u16::from_be_bytes([data[pos+2], data[pos+3]]) as usize;
+        pos += 4;
+        
+        if attr_type == 0x0020 { // XOR-MAPPED-ADDRESS
+            if attr_len >= 8 {
+                let family = data[pos+1];
+                let x_port = u16::from_be_bytes([data[pos+2], data[pos+3]]);
+                let port = x_port ^ 0x2112;
+                if family == 0x01 { // IPv4
+                    let x_ip = [data[pos+4], data[pos+5], data[pos+6], data[pos+7]];
+                    let ip = Ipv4Addr::new(
+                        x_ip[0] ^ 0x21, x_ip[1] ^ 0x12, x_ip[2] ^ 0xA4, x_ip[3] ^ 0x42
+                    );
+                    return Some(SocketAddr::new(IpAddr::V4(ip), port));
+                }
+            }
+        } else if attr_type == 0x0001 { // MAPPED-ADDRESS
+             if attr_len >= 8 {
+                let family = data[pos+1];
+                let port = u16::from_be_bytes([data[pos+2], data[pos+3]]);
+                if family == 0x01 { // IPv4
+                    let ip = Ipv4Addr::new(data[pos+4], data[pos+5], data[pos+6], data[pos+7]);
+                    return Some(SocketAddr::new(IpAddr::V4(ip), port));
+                }
+            }
+        }
+        pos += (attr_len + 3) & !3; // Padding
+    }
     None
 }
