@@ -99,11 +99,17 @@
         localSource.connect(localAnalyser);
       }
 
-      remoteAnalyser = audioCtx.createAnalyser();
-      remoteAnalyser.fftSize = 256;
-      // Note: We no longer capture from rVideo because it's a canvas stream with no audio.
-      // Instead, the AudioDecoder will connect directly to this remoteAnalyser.
-      remoteAnalyser.connect(audioCtx.destination); 
+      // Ensure we reuse any analyser created earlier (avoid race where decoder
+      // output arrives before visualizer creation). If not present, create it
+      // and connect to the destination now.
+      if (!remoteAnalyser) {
+        remoteAnalyser = audioCtx.createAnalyser();
+        remoteAnalyser.fftSize = 256;
+        // Note: We no longer capture from rVideo because it's a canvas stream with no audio.
+        // Instead, the AudioDecoder will connect directly to this remoteAnalyser.
+        remoteAnalyser.connect(audioCtx.destination);
+        log('[VIS] remoteAnalyser created (setupVisualizers)');
+      }
 
 
       const localDataArray = new Uint8Array(localAnalyser.frequencyBinCount);
@@ -515,6 +521,20 @@
       // (AudioContext was initialized at the top of connect())
       audioCtx?.resume();
 
+      // Create the remote analyser early to avoid a race where the AudioDecoder
+      // outputs frames before the visualizer has been created. This ensures
+      // decoded audio can always connect to an analyser node.
+      if (!remoteAnalyser && audioCtx) {
+        try {
+          remoteAnalyser = audioCtx.createAnalyser();
+          remoteAnalyser.fftSize = 256;
+          remoteAnalyser.connect(audioCtx.destination);
+          log('[VIS] remoteAnalyser created (early)');
+        } catch (e) {
+          log('[WARN] Could not create remoteAnalyser early: ' + e);
+        }
+      }
+
       let audioPlaybackTime = 0;
       let decodedAudioCount = 0;
       const audioDecoder = new (window as any).AudioDecoder({
@@ -526,8 +546,11 @@
           }
 
           decodedAudioCount++;
+          // Log first frame plus periodic progress so user can observe incoming audio
           if (decodedAudioCount === 1) {
             log('[DECODER] Audio decode: first frame received');
+          } else if (decodedAudioCount % 50 === 0) {
+            log(`[DECODER] Audio decode: frame #${decodedAudioCount} (frames=${audioData.numberOfFrames}, sr=${audioData.sampleRate}, analyser=${!!remoteAnalyser})`);
           }
 
           const buffer = audioCtx.createBuffer(1, audioData.numberOfFrames, audioData.sampleRate);
@@ -538,10 +561,15 @@
           const source = audioCtx.createBufferSource();
           source.buffer = buffer;
           
-          // Connect to destination AND the visualizer analyser
+          // Connect to destination AND the visualizer analyser (if present)
           source.connect(audioCtx.destination);
           if (remoteAnalyser) {
             source.connect(remoteAnalyser);
+            if (decodedAudioCount <= 3 || decodedAudioCount % 100 === 0) {
+              log(`[VIS] Connected decoded audio frame #${decodedAudioCount} to remoteAnalyser`);
+            }
+          } else if (decodedAudioCount <= 3) {
+            log('[WARN] remoteAnalyser not available when audio decoded');
           }
 
           // Schedule playback sequentially to avoid overlapping/gaps
