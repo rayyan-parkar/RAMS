@@ -168,7 +168,8 @@ impl RAMSCore {
                 "RAMSCore: staging pending audio media in offer with direction {:?}",
                 direction
             );
-            sdp_api.add_media(MediaKind::Audio, direction, None, None, None);
+            let mid = sdp_api.add_media(MediaKind::Audio, direction, None, None, None);
+            self.audio_mid = Some(mid);
             staged_changes += 1;
         }
 
@@ -177,7 +178,8 @@ impl RAMSCore {
                 "RAMSCore: staging pending video media in offer with direction {:?}",
                 direction
             );
-            sdp_api.add_media(MediaKind::Video, direction, None, None, None);
+            let mid = sdp_api.add_media(MediaKind::Video, direction, None, None, None);
+            self.video_mid = Some(mid);
             staged_changes += 1;
         }
 
@@ -251,7 +253,16 @@ impl RAMSCore {
         let offer = SdpOffer::from_sdp_string(&sdp)
             .map_err(|e| format!("Invalid SDP Offer: {:?}", e))?;
 
-        let answer = self.rtc.sdp_api().accept_offer(offer)
+        let mut sdp_api = self.rtc.sdp_api();
+        
+        // The Responder MUST declare its supported local media tracks to match against the offer.
+        // If we don't do this, str0m might configure the answer as recvonly or inactive.
+        let am = sdp_api.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
+        self.audio_mid = Some(am);
+        let vm = sdp_api.add_media(MediaKind::Video, Direction::SendRecv, None, None, None);
+        self.video_mid = Some(vm);
+
+        let answer = sdp_api.accept_offer(offer)
             .map_err(|e| format!("Failed to accept offer: {:?}", e))?;
 
         println!("RAMSCore: offer accepted and SDP answer prepared");
@@ -337,8 +348,9 @@ impl RAMSCore {
             str0m::media::Frequency::MICROS
         );
 
-        let pt = str0m::media::Pt::new_with_value(111);
         let writer = self.rtc.writer(mid).ok_or("No audio writer")?;
+        let pt = writer.payload_params().next().map(|p| p.pt()).ok_or_else(|| "No PT for MID".to_string())?;
+        
         writer.write(pt, now, rtp_time, data).map_err(|e| e.to_string())
     }
 

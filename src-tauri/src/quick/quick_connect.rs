@@ -442,8 +442,21 @@ async fn flush_core_outputs_to_network(
                         let _ = event_tx.send(QuickEvent::IceState(format!("{:?}", state)));
                     }
                     str0m::Event::MediaData(data) => {
-                        let kind = if *data.pt == 111 { "audio" } else { "video" };
-                        let _ = event_tx.send(QuickEvent::MediaData(kind.to_string(), data.data));
+                        let kind = {
+                            let core_guard = core.lock().await;
+                            if Some(data.mid) == core_guard.video_mid {
+                                "video"
+                            } else if Some(data.mid) == core_guard.audio_mid {
+                                "audio"
+                            } else {
+                                "unknown"
+                            }
+                        };
+                        if kind != "unknown" {
+                            let _ = event_tx.send(QuickEvent::MediaData(kind.to_string(), data.data));
+                        } else {
+                            println!("Quick: Received MediaData for unknown MID {:?}", data.mid);
+                        }
                     }
                     str0m::Event::MediaAdded(media_added) => {
                         println!(
