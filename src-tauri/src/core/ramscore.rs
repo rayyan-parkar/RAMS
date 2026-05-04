@@ -341,10 +341,10 @@ impl RAMSCore {
     }
 
     /// Writes raw media bytes (e.g., an Opus frame) to the Audio RTP stream.
-    pub fn write_audio_media(&mut self, mid: Mid, data: Vec<u8>) -> Result<(), String> {
+    pub fn write_audio_media(&mut self, mid: Mid, data: Vec<u8>, timestamp: u64) -> Result<(), String> {
         let now = Instant::now();
         let rtp_time = str0m::media::MediaTime::new(
-            (now - self.start_time).as_micros() as u64, 
+            timestamp, 
             str0m::media::Frequency::MICROS
         );
 
@@ -355,14 +355,14 @@ impl RAMSCore {
     }
 
     /// Writes a media chunk (VP8/WebM) to the specified MID.
-    pub fn write_media(&mut self, mid: Mid, data: Vec<u8>) -> Result<(), String> {
+    pub fn write_media(&mut self, mid: Mid, data: Vec<u8>, timestamp: u64) -> Result<(), String> {
         let writer = self.rtc.writer(mid).ok_or_else(|| "No writer for MID".to_string())?;
         
         let pt = writer.payload_params().next().map(|p| p.pt()).ok_or_else(|| "No PT for MID".to_string())?;
         
         let now = Instant::now();
         let rtp_time = str0m::media::MediaTime::new(
-            (now - self.start_time).as_micros() as u64, 
+            timestamp, 
             str0m::media::Frequency::MICROS
         );
         

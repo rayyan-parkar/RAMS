@@ -84,13 +84,14 @@ async fn close_call(state: State<'_, AppState>) -> Result<(), String> {
 #[tauri::command]
 async fn send_video_chunk(
     data: Vec<u8>,
+    timestamp: u64,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let mut conn_guard = state.connection.lock().await;
     if let Some(conn) = conn_guard.as_mut() {
         let mut core = conn.core.lock().await;
         if let Some(mid) = core.video_mid {
-            core.write_media(mid, data)?;
+            core.write_media(mid, data, timestamp)?;
         }
     }
     Ok(())
@@ -99,13 +100,14 @@ async fn send_video_chunk(
 #[tauri::command]
 async fn send_audio_chunk(
     data: Vec<u8>,
+    timestamp: u64,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let mut conn_guard = state.connection.lock().await;
     if let Some(conn) = conn_guard.as_mut() {
         let mut core = conn.core.lock().await;
         if let Some(mid) = core.audio_mid {
-            core.write_audio_media(mid, data)?;
+            core.write_audio_media(mid, data, timestamp)?;
         }
     }
     Ok(())

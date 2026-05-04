@@ -20,6 +20,7 @@
   let localAudioLevel = $state(0);
   let remoteAudioLevel = $state(0);
   let audioCtx: AudioContext | null = null;
+  let remoteAnalyser: AnalyserNode | null = null;
   let visualizerFrameId: number;
 
   function log(msg: string) {
@@ -46,20 +47,21 @@
         localSource.connect(localAnalyser);
       }
 
-      const remoteAnalyser = audioCtx.createAnalyser();
+      remoteAnalyser = audioCtx.createAnalyser();
       remoteAnalyser.fftSize = 256;
-      // We must connect the remote video element to the context
-      // Note: This might cause issues if CORS isn't right, but for ObjectURLs it usually works.
-      const remoteSource = audioCtx.createMediaElementSource(rVideo);
-      remoteSource.connect(remoteAnalyser);
-      remoteAnalyser.connect(audioCtx.destination); // Required to actually hear the remote peer!
+      // Note: We no longer capture from rVideo because it's a canvas stream with no audio.
+      // Instead, the AudioDecoder will connect directly to this remoteAnalyser.
+      remoteAnalyser.connect(audioCtx.destination); 
+
 
       const localDataArray = new Uint8Array(localAnalyser.frequencyBinCount);
       const remoteDataArray = new Uint8Array(remoteAnalyser.frequencyBinCount);
 
       function renderFrame() {
         localAnalyser.getByteFrequencyData(localDataArray);
-        remoteAnalyser.getByteFrequencyData(remoteDataArray);
+        if (remoteAnalyser) {
+          remoteAnalyser.getByteFrequencyData(remoteDataArray);
+        }
         
         localAudioLevel = localDataArray.reduce((a, b) => a + b, 0) / localDataArray.length || 0;
         remoteAudioLevel = remoteDataArray.reduce((a, b) => a + b, 0) / remoteDataArray.length || 0;
@@ -126,6 +128,16 @@
     log(`[SYS] authenticating room key: ${roomId}`);
     
     try {
+      // Initialize AudioContext at the VERY BEGINNING of the click handler
+      // to ensure we capture the user gesture before any 'await' calls.
+      if (!audioCtx) {
+        audioCtx = new window.AudioContext({ sampleRate: 48000 });
+        log(`[SYS] AudioContext created, state=${audioCtx.state}`);
+      }
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume().then(() => log(`[SYS] AudioContext resumed, state=${audioCtx?.state}`));
+      }
+
       log(`[SYS] WebCodecs Check: VideoEncoder=${!!(window as any).VideoEncoder}, AudioEncoder=${!!(window as any).AudioEncoder}`);
       
       // --- EVENT LISTENERS (Persistent) ---
@@ -478,12 +490,24 @@
         log(`[SELF-TEST] Exception: ${e.name}: ${e.message}`);
       }
 
-      if (!audioCtx) {
-        audioCtx = new window.AudioContext({ sampleRate: 48000 });
-      }
+      // (AudioContext was initialized at the top of connect())
+      audioCtx?.resume();
+
+      let audioPlaybackTime = 0;
+      let decodedAudioCount = 0;
       const audioDecoder = new (window as any).AudioDecoder({
         output: (audioData: any) => {
           if (!audioCtx) return;
+          
+          if (audioCtx.state === 'suspended') {
+            audioCtx.resume();
+          }
+
+          decodedAudioCount++;
+          if (decodedAudioCount <= 10) {
+            log(`[DEC-AUDIO #${decodedAudioCount}] ${audioData.numberOfFrames} frames, timestamp=${audioData.timestamp}`);
+          }
+
           const buffer = audioCtx.createBuffer(1, audioData.numberOfFrames, audioData.sampleRate);
           const channelData = new Float32Array(audioData.numberOfFrames);
           audioData.copyTo(channelData, { planeIndex: 0 });
@@ -491,13 +515,28 @@
 
           const source = audioCtx.createBufferSource();
           source.buffer = buffer;
+          
+          // Connect to destination AND the visualizer analyser
           source.connect(audioCtx.destination);
-          source.start();
+          if (remoteAnalyser) {
+            source.connect(remoteAnalyser);
+          }
+
+          // Schedule playback sequentially to avoid overlapping/gaps
+          const now = audioCtx.currentTime;
+          const startAt = Math.max(now, audioPlaybackTime);
+          source.start(startAt);
+          audioPlaybackTime = startAt + buffer.duration;
           audioData.close();
         },
         error: (e: any) => log(`[ERR] AudioDecoder: ${e}`)
       });
-      audioDecoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1 });
+      try {
+        audioDecoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1 });
+        log(`[OK] AudioDecoder configured, state=${audioDecoder.state}`);
+      } catch (e) {
+        log(`[ERR] AudioDecoder config failed: ${e}`);
+      }
 
       let rxVideoChunks = 0;
       let rxAudioChunks = 0;
@@ -579,10 +618,18 @@
           }
         } else if (kind === 'audio') {
           rxAudioChunks++;
+          if (rxAudioChunks <= 10) {
+            log(`[RX-AUDIO #${rxAudioChunks}] ${uint8.length} bytes, decoder=${audioDecoder.state}, audioCtx=${audioCtx?.state}`);
+          }
           try {
+            // Use a sequence-based timestamp to ensure they are unique and monotonic
+            // even if multiple packets arrive in the same tick.
+            // 20ms = 20000us per Opus packet.
+            const syntheticTimestamp = rxAudioChunks * 20000;
+            
             audioDecoder.decode(new (window as any).EncodedAudioChunk({
               type: 'key',
-              timestamp: performance.now() * 1000,
+              timestamp: syntheticTimestamp,
               data: uint8
             }));
           } catch (e) {
@@ -684,7 +731,10 @@
               log(`[TX #${txFrameCount}] ${chunk.type} frame, ${raw.length}→${annexBData.length} bytes (${gotAnnexB ? 'annexb' : 'avcc→annexb'}), NALs=[${nalTypes.join(', ')}]`);
             }
 
-            invoke('send_video_chunk', { data: Array.from(annexBData) });
+            invoke('send_video_chunk', { 
+              data: Array.from(annexBData),
+              timestamp: chunk.timestamp 
+            });
           }
         },
         error: (e: any) => log(`[ERR] VideoEncoder: name=${e.name}, message="${e.message}"`)
@@ -727,7 +777,10 @@
             const data = new Uint8Array(chunk.byteLength);
             chunk.copyTo(data);
             if (Math.random() < 0.01) log(`[TX] Sending ${data.length} byte audio frame`);
-            invoke('send_audio_chunk', { data: Array.from(data) });
+            invoke('send_audio_chunk', { 
+              data: Array.from(data),
+              timestamp: chunk.timestamp
+            });
           }
         },
         error: (e: any) => log(`[ERR] AudioEncoder: ${e}`)
@@ -740,9 +793,16 @@
       }
 
       let audioTime = 0;
+      let sendCount = 0;
       scriptNode.onaudioprocess = (e) => {
         if (connectionState !== 'CONNECTED') return;
         const pcm = e.inputBuffer.getChannelData(0);
+        
+        if (sendCount < 3) {
+          log(`[TX-AUDIO] Capturing PCM, length=${pcm.length}`);
+          sendCount++;
+        }
+
         const audioData = new (window as any).AudioData({
           format: 'f32-planar',
           sampleRate: 48000,
