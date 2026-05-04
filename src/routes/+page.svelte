@@ -16,12 +16,34 @@
   let isVideoOff = $state(false);
   let localStream: MediaStream | null = null;
 
+  // Fullscreen mode
+  let isFullscreen = $state(false);
+  let showExitButton = $state(false);
+  let exitButtonTimeout: ReturnType<typeof setTimeout> | null = null;
+  let fullscreenContainer: HTMLDivElement | null = null;
+  
   // Visualizers
   let localAudioLevel = $state(0);
   let remoteAudioLevel = $state(0);
   let audioCtx: AudioContext | null = null;
   let remoteAnalyser: AnalyserNode | null = null;
   let visualizerFrameId: number;
+  
+  function toggleFullscreen() {
+    isFullscreen = !isFullscreen;
+    showExitButton = false;
+    if (exitButtonTimeout) clearTimeout(exitButtonTimeout);
+  }
+  
+  function handleMouseMove() {
+    if (isFullscreen && !showExitButton) {
+      showExitButton = true;
+      if (exitButtonTimeout) clearTimeout(exitButtonTimeout);
+      exitButtonTimeout = setTimeout(() => {
+        showExitButton = false;
+      }, 3000); // Hide after 3 seconds
+    }
+  }
 
   function log(msg: string) {
     logs = [...logs, msg];
@@ -796,7 +818,7 @@
       let audioTime = 0;
       let audioSendCount = 0;
       let audioFrameSkip = 0;
-      scriptNode.onaudioprocess = (e) => {
+      scriptNode.onaudioprocess = (e: AudioProcessingEvent) => {
         if (connectionState !== 'CONNECTED') return;
         const pcm = e.inputBuffer.getChannelData(0);
         
@@ -854,8 +876,24 @@
  `;
 </script>
 
-<div class="container">
-  <div class="retro-panel">
+<div
+  class="container"
+  class:fullscreen-mode={isFullscreen}
+  bind:this={fullscreenContainer}
+  onmousemove={handleMouseMove}
+  role="main"
+>
+  {#if isFullscreen}
+    <!-- Fullscreen Mode: Only show remote video -->
+    <div class="fullscreen-container">
+      <video bind:this={remoteVideoRef} autoplay playsinline class="fullscreen-video"></video>
+      {#if showExitButton}
+        <button class="exit-fullscreen-btn" onclick={toggleFullscreen}>[ EXIT ⊡ ]</button>
+      {/if}
+    </div>
+  {:else}
+    <!-- Normal Mode -->
+    <div class="retro-panel">
     <div class="ascii-art">{asciiLogo}</div>
     
     {#if connectionState === 'DISCONNECTED'}
@@ -884,6 +922,9 @@
           <span>> REMOTE_RX [H.264]</span>
           <video bind:this={remoteVideoRef} autoplay playsinline></video>
           <div class="mic-visualizer">VOL: {getAsciiBar(remoteAudioLevel)}</div>
+          {#if connectionState === 'CONNECTED'}
+            <button class="fullscreen-btn" title="Fullscreen" onclick={toggleFullscreen}>[ ⛶ FULLSCREEN ]</button>
+          {/if}
         </div>
       </div>
       <div class="media-controls mt-4">
@@ -901,5 +942,6 @@
         <div class="blink">_</div>
       {/if}
     </div>
-  </div>
+    </div>
+  {/if}
 </div>
