@@ -5,7 +5,7 @@
   let roomId = $state('FYP-DEMO-2026');
   let sigServer = $state('ws://192.168.1.169:8090');
   let connectionState = $state('DISCONNECTED');
-  let useMockFrames = $state(false);
+
   let logs: string[] = $state(['System Initialised... Ready.']);
   
   let localVideoRef: HTMLVideoElement | null = $state(null);
@@ -744,44 +744,24 @@
       // 1. Capture local webcam
       let stream: MediaStream;
       
-      if (useMockFrames) {
-        log('[SYS] Mock frames enabled. Generating canvas stream...');
-        const canvas = document.createElement('canvas');
-        canvas.width = 640;
-        canvas.height = 480;
-        const ctx = canvas.getContext('2d')!;
-        
-        let colorOffset = 0;
-        setInterval(() => {
-          ctx.fillStyle = `hsl(${colorOffset % 360}, 100%, 50%)`;
-          ctx.fillRect(0, 0, 640, 480);
-          ctx.fillStyle = 'white';
-          ctx.font = '30px monospace';
-          ctx.fillText(`MOCK FRAME: ${colorOffset}`, 50, 240);
-          colorOffset += 5;
-        }, 33);
-        
-        stream = canvas.captureStream(30);
-      } else {
-        log('[SYS] Requesting webcam and microphone access...');
+      log('[SYS] Requesting webcam and microphone access...');
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        log('[OK] Video and Audio devices acquired.');
+      } catch (err) {
+        log(`[WARN] Both devices failed (${err}). Trying Video only...`);
         try {
-          stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-          log('[OK] Video and Audio devices acquired.');
-        } catch (err) {
-          log(`[WARN] Both devices failed (${err}). Trying Video only...`);
+          stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+          log('[OK] Video device acquired (No Audio).');
+        } catch (err2) {
+          log(`[WARN] Video only failed (${err2}). Trying Audio only...`);
           try {
-            stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-            log('[OK] Video device acquired (No Audio).');
-          } catch (err2) {
-            log(`[WARN] Video only failed (${err2}). Trying Audio only...`);
-            try {
-              stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
-              log('[OK] Audio device acquired (No Video).');
-            } catch (err3) {
-              log(`[ERR] All hardware capture failed (${err3}). Enable USE_MOCK_FRAMES to test without hardware.`);
-              connectionState = 'DISCONNECTED';
-              return;
-            }
+            stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
+            log('[OK] Audio device acquired (No Video).');
+          } catch (err3) {
+            log(`[ERR] All hardware capture failed (${err3}).`);
+            connectionState = 'DISCONNECTED';
+            return;
           }
         }
       }
@@ -1019,10 +999,7 @@
         <label for="sig">> SIG_SERVER_IP</label>
         <input id="sig" type="text" bind:value={sigServer} spellcheck="false" />
         
-        <div class="checkbox-group mt-4">
-          <input id="mock-frames" type="checkbox" bind:checked={useMockFrames} />
-          <label for="mock-frames">> USE_MOCK_FRAMES</label>
-        </div>
+
         
         <button class="mt-4" onclick={connect}>[ INIT UPLINK ]</button>
       </div>
@@ -1031,7 +1008,6 @@
         <div class="video-box local">
           <span>> LOCAL_TX [H.264]</span>
           <video bind:this={localVideoRef} autoplay muted playsinline class="glow"></video>
-          <div class="mic-visualizer">MIC: {getAsciiBar(localAudioLevel)}</div>
           {#if connectionState === 'CONNECTED'}
             {#if isFullscreen}
               {#if showExitButton}
@@ -1049,7 +1025,6 @@
         <div class="video-box remote">
           <span>> REMOTE_RX [H.264]</span>
           <video bind:this={remoteVideoRef} autoplay playsinline></video>
-          <div class="mic-visualizer">VOL: {getAsciiBar(remoteAudioLevel)}</div>
         </div>
       </div>
       <div class="media-controls mt-4">

@@ -156,28 +156,7 @@ button:hover {
   margin-bottom: 0.5rem;
 }
 
-.checkbox-group {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 0.8rem;
-  margin-top: 1rem;
-  margin-bottom: 1rem;
-  border: 1px dashed var(--border-color);
-  padding: 0.5rem;
-  background: #050505;
-  width: fit-content;
-}
 
-.checkbox-group label {
-  margin: 0;
-  padding: 0;
-  display: inline-block;
-  color: var(--primary-glow);
-  line-height: 16px;
-  /* Match checkbox height */
-  cursor: pointer;
-}
 
 .video-grid {
   display: flex;
@@ -237,16 +216,6 @@ video.glow {
   }
 }
 
-.mic-visualizer {
-  font-size: 0.8rem;
-  color: var(--primary-glow);
-  font-family: monospace;
-  text-align: center;
-  margin-top: 0.5rem;
-  padding: 0.2rem;
-  background: #000;
-  border: 1px dashed var(--border-color);
-}
 
 .fullscreen-btn {
   position: absolute;
@@ -327,8 +296,7 @@ button.danger:hover {
 .container.fullscreen-mode .video-box.remote,
 .container.fullscreen-mode .media-controls,
 .container.fullscreen-mode .terminal,
-.container.fullscreen-mode .video-box.local span,
-.container.fullscreen-mode .video-box.local .mic-visualizer {
+.container.fullscreen-mode .video-box.local span {
   display: none !important;
 }
 
