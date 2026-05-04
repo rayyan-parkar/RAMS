@@ -155,8 +155,9 @@ pub async fn connect(ws_url: &str, room: &str) -> Result<(QuickConnection, mpsc:
     let task_core = std::sync::Arc::clone(&core);
     let task_event_tx = event_tx.clone();
     let task_ws_url = ws_url.to_string();
+    let task_room = room.to_string();
     let ws_task = tokio::spawn(async move {
-        if let Err(e) = run_connection_loop(task_core, shutdown_rx, ws_rx, ws_read, ws_write, ws_tx, task_event_tx, task_ws_url).await {
+        if let Err(e) = run_connection_loop(task_core, shutdown_rx, ws_rx, ws_read, ws_write, ws_tx, task_event_tx, task_ws_url, task_room).await {
             eprintln!("QuickConnection loop exited with error: {:?}", e);
         }
     });
@@ -218,6 +219,7 @@ async fn run_connection_loop(
     ws_tx: mpsc::UnboundedSender<WireMessage>,
     event_tx: mpsc::UnboundedSender<QuickEvent>,
     ws_url: String,
+    room: String,
 ) -> Result<(), QuickError> {
     println!("Quick: Entering background connection loop");
     // Initialize the UDP socket for media transmission
@@ -249,6 +251,9 @@ async fn run_connection_loop(
     // Keep an outgoing buffer for websocket messages when WS is down.
     let mut pending_outbox: VecDeque<WireMessage> = VecDeque::new();
     let mut ws_alive = true;
+    // Reconnect scheduling: attempt one reconnect per main-loop iteration when due
+    let mut reconnect_backoff_ms: u64 = 250;
+    let mut next_reconnect_time = Instant::now();
 
     loop {
         tokio::select! {
@@ -332,12 +337,10 @@ async fn run_connection_loop(
         // After every event, we check if the engine has data it wants to send out
         timeout = flush_core_outputs_to_network(&core, &socket, &ws_tx, &event_tx).await;
 
-        // If WS died, try to reconnect in the background (non-blocking to media loop)
+        // If WS died, schedule a single reconnect attempt per loop iteration (avoids blocking UDP loop)
         if !ws_alive {
-            // Simple reconnect loop with exponential backoff
-            let mut backoff = 250u64; // ms
-            loop {
-                println!("Quick: Attempting websocket reconnect to {}", ws_url);
+            if Instant::now() >= next_reconnect_time {
+                // attempt one reconnect
                 match connect_async(&ws_url).await {
                     Ok((stream, _)) => {
                         println!("Quick: Reconnected websocket to {}", ws_url);
@@ -347,30 +350,42 @@ async fn run_connection_loop(
                         ws_alive = true;
 
                         // Re-join room to re-establish signaling session
-                        let join = WireMessage::Join { room: "".to_string() };
-                        // Note: We don't have `room` param here; best-effort: send a PeerJoined-like ping
-                        // Drain pending outbox
-                        while let Some(pending) = pending_outbox.pop_front() {
-                            if let Err(e) = ws_write.send(tokio_tungstenite::tungstenite::Message::Text(
-                                Utf8Bytes::from(serde_json::to_string(&pending).unwrap_or_default()),
-                            )).await {
-                                eprintln!("Quick: Failed to send pending message after reconnect: {:?}", e);
-                                // Put it back and break to retry reconnect
-                                pending_outbox.push_front(pending);
-                                ws_alive = false;
-                                break;
+                        let join = WireMessage::Join { room: room.clone() };
+                        if let Err(e) = ws_write.send(tokio_tungstenite::tungstenite::Message::Text(
+                            Utf8Bytes::from(serde_json::to_string(&join).unwrap_or_default()),
+                        )).await {
+                            eprintln!("Quick: Failed to send Join after reconnect: {:?}", e);
+                            ws_alive = false;
+                            // schedule next attempt
+                            next_reconnect_time = Instant::now() + Duration::from_millis(reconnect_backoff_ms);
+                            reconnect_backoff_ms = std::cmp::min(reconnect_backoff_ms * 2, 5000);
+                        } else {
+                            // Drain pending outbox (best-effort)
+                            while let Some(pending) = pending_outbox.pop_front() {
+                                if let Err(e) = ws_write.send(tokio_tungstenite::tungstenite::Message::Text(
+                                    Utf8Bytes::from(serde_json::to_string(&pending).unwrap_or_default()),
+                                )).await {
+                                    eprintln!("Quick: Failed to send pending message after reconnect: {:?}", e);
+                                    // Put it back and mark ws dead to retry later
+                                    pending_outbox.push_front(pending);
+                                    ws_alive = false;
+                                    next_reconnect_time = Instant::now() + Duration::from_millis(reconnect_backoff_ms);
+                                    reconnect_backoff_ms = std::cmp::min(reconnect_backoff_ms * 2, 5000);
+                                    break;
+                                }
                             }
-                        }
 
-                        if ws_alive {
-                            println!("Quick: Pending websocket messages flushed after reconnect");
-                            break;
+                            if ws_alive {
+                                // reset backoff on success
+                                reconnect_backoff_ms = 250;
+                                next_reconnect_time = Instant::now();
+                            }
                         }
                     }
                     Err(e) => {
-                        eprintln!("Quick: Reconnect attempt failed: {:?}. Backing off {}ms", e, backoff);
-                        tokio::time::sleep(Duration::from_millis(backoff)).await;
-                        backoff = std::cmp::min(backoff * 2, 5000);
+                        eprintln!("Quick: Reconnect attempt failed: {:?}. Scheduling retry.", e);
+                        next_reconnect_time = Instant::now() + Duration::from_millis(reconnect_backoff_ms);
+                        reconnect_backoff_ms = std::cmp::min(reconnect_backoff_ms * 2, 5000);
                     }
                 }
             }
