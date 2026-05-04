@@ -284,6 +284,11 @@ impl RAMSCore {
 
         println!("RAMSCore: found pending offer, applying answer now");
 
+        self.signaling_handler.advance(SignalingState::TricklingIce)?;
+        println!("RAMSCore: signaling state updated to TricklingIce before answer application");
+        self.flush_pending_candidates();
+        println!("RAMSCore: flushed pending remote ICE candidates before answer application");
+
         let answer = SdpAnswer::from_sdp_string(&sdp)
             .map_err(|e| format!("Invalid SDP Answer: {:?}", e))?;
 
@@ -294,11 +299,6 @@ impl RAMSCore {
         }
 
         println!("RAMSCore: answer accepted successfully");
-
-        self.signaling_handler.advance(SignalingState::TricklingIce)?;
-        println!("RAMSCore: signaling state updated to TricklingIce after answer");
-        self.flush_pending_candidates();
-        println!("RAMSCore: flushed pending remote ICE candidates after answer");
 
         Ok(())
     }
