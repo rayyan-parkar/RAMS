@@ -1033,17 +1033,7 @@
   onmousemove={handleMouseMove}
   role="main"
 >
-  {#if isFullscreen}
-    <!-- Fullscreen Mode: Only show remote video -->
-    <div class="fullscreen-container">
-      <video bind:this={remoteVideoRef} autoplay playsinline class="fullscreen-video"></video>
-      {#if showExitButton}
-        <button class="exit-fullscreen-btn" onclick={toggleFullscreen}>[ EXIT ⊡ ]</button>
-      {/if}
-    </div>
-  {:else}
-    <!-- Normal Mode -->
-    <div class="retro-panel">
+  <div class="retro-panel">
     <div class="ascii-art">{asciiLogo}</div>
     
     {#if connectionState === 'DISCONNECTED'}
@@ -1073,7 +1063,13 @@
           <video bind:this={remoteVideoRef} autoplay playsinline></video>
           <div class="mic-visualizer">VOL: {getAsciiBar(remoteAudioLevel)}</div>
           {#if connectionState === 'CONNECTED'}
-            <button class="fullscreen-btn" title="Fullscreen" onclick={toggleFullscreen}>[ ⛶ FULLSCREEN ]</button>
+            {#if isFullscreen}
+              {#if showExitButton}
+                <button class="exit-fullscreen-btn" onclick={toggleFullscreen}>[ EXIT ⊡ ]</button>
+              {/if}
+            {:else}
+              <button class="fullscreen-btn" title="Fullscreen" onclick={toggleFullscreen}>[ ⛶ FULLSCREEN ]</button>
+            {/if}
           {/if}
         </div>
       </div>
@@ -1092,6 +1088,5 @@
         <div class="blink">_</div>
       {/if}
     </div>
-    </div>
-  {/if}
+  </div>
 </div>

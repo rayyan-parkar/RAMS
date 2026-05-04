@@ -292,32 +292,61 @@ button.danger:hover {
   width: 100vw;
   max-width: 100vw;
   height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  margin: 0;
+  padding: 0;
+  display: block;
+  background: black;
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 9999;
 }
 
-.fullscreen-container {
+.container.fullscreen-mode .retro-panel {
+  border: none;
+  padding: 0;
+  box-shadow: none;
   width: 100%;
   height: 100%;
-  background: #000;
+  margin: 0;
+  background: black;
+}
+
+.container.fullscreen-mode .retro-panel::before,
+.container.fullscreen-mode .retro-panel::after,
+.container.fullscreen-mode .ascii-art,
+.container.fullscreen-mode .video-box.local,
+.container.fullscreen-mode .media-controls,
+.container.fullscreen-mode .terminal,
+.container.fullscreen-mode .video-box.remote span,
+.container.fullscreen-mode .video-box.remote .mic-visualizer {
+  display: none !important;
+}
+
+.container.fullscreen-mode .video-grid {
+  display: block;
+  width: 100%;
+  height: 100%;
+  gap: 0;
+  margin: 0;
+}
+
+.container.fullscreen-mode .video-box.remote {
+  border: none;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: black;
   display: flex;
   align-items: center;
   justify-content: center;
-  position: relative;
-  overflow: hidden;
-  cursor: none;
 }
 
-.fullscreen-container:hover {
-  cursor: auto;
-}
-
-.fullscreen-video {
+.container.fullscreen-mode .video-box.remote video {
   width: 100%;
   height: 100%;
   object-fit: contain;
-  background: #000;
+  background: black;
 }
 
 .exit-fullscreen-btn {
