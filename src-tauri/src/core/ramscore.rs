@@ -247,6 +247,10 @@ impl RAMSCore {
 
     fn handle_offer(&mut self, sdp: String) -> Result<SignalingMessage, String> {
         println!("RAMSCore: handling incoming offer ({} bytes)", sdp.len());
+        // Guard: Only accept offer if not already in TricklingIce or Stable
+        if self.signaling_handler.state == SignalingState::TricklingIce || self.signaling_handler.state == SignalingState::Stable {
+            return Err("Offer already accepted or in invalid state for offer".to_string());
+        }
         self.signaling_handler.advance(SignalingState::TricklingIce)?;
         println!("RAMSCore: responder state moved to TricklingIce before accepting offer");
 
@@ -254,9 +258,7 @@ impl RAMSCore {
             .map_err(|e| format!("Invalid SDP Offer: {:?}", e))?;
 
         let mut sdp_api = self.rtc.sdp_api();
-        
         // The Responder MUST declare its supported local media tracks to match against the offer.
-        // If we don't do this, str0m might configure the answer as recvonly or inactive.
         let am = sdp_api.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
         self.audio_mid = Some(am);
         let vm = sdp_api.add_media(MediaKind::Video, Direction::SendRecv, None, None, None);
@@ -269,6 +271,7 @@ impl RAMSCore {
 
         self.flush_pending_candidates();
         println!("RAMSCore: flushed pending remote ICE candidates after offer");
+        println!("RAMSCore: signaling state after offer: {:?}", self.signaling_handler.state);
 
         Ok(SignalingMessage::Answer {
             sdp: answer.to_sdp_string(),
@@ -277,15 +280,19 @@ impl RAMSCore {
 
     fn handle_answer(&mut self, sdp: String) -> Result<(), String> {
         println!("RAMSCore: handling incoming answer ({} bytes)", sdp.len());
+        // Guard: Only accept answer if we have a pending offer
         let pending = self
             .pending_offer
             .take()
             .ok_or_else(|| "No pending offer to apply answer to".to_string())?;
 
-        println!("RAMSCore: found pending offer, applying answer now");
-
-        self.signaling_handler.advance(SignalingState::TricklingIce)?;
-        println!("RAMSCore: signaling state updated to TricklingIce before answer application");
+        // Guard: Only accept answer if not already in TricklingIce or Stable
+        if self.signaling_handler.state == SignalingState::TricklingIce || self.signaling_handler.state == SignalingState::Stable {
+            println!("RAMSCore: WARNING: Already in TricklingIce or Stable state before answer application");
+        } else {
+            self.signaling_handler.advance(SignalingState::TricklingIce)?;
+            println!("RAMSCore: signaling state updated to TricklingIce before answer application");
+        }
         self.flush_pending_candidates();
         println!("RAMSCore: flushed pending remote ICE candidates before answer application");
 
@@ -299,6 +306,7 @@ impl RAMSCore {
         }
 
         println!("RAMSCore: answer accepted successfully");
+        println!("RAMSCore: signaling state after answer: {:?}", self.signaling_handler.state);
 
         Ok(())
     }

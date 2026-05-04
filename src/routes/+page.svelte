@@ -29,14 +29,36 @@
   let remoteAnalyser: AnalyserNode | null = null;
   let visualizerFrameId: number;
   
+
+  // Robust fullscreen logic using browser Fullscreen API
   function toggleFullscreen() {
-    isFullscreen = !isFullscreen;
-    showExitButton = false;
+    if (!isFullscreen) {
+      // Enter fullscreen
+      if (fullscreenContainer && fullscreenContainer.requestFullscreen) {
+        fullscreenContainer.requestFullscreen();
+      }
+    } else {
+      // Exit fullscreen
+      if (document.fullscreenElement) {
+        document.exitFullscreen();
+      }
+    }
+    // showExitButton will be handled by event
     if (exitButtonTimeout) clearTimeout(exitButtonTimeout);
+  }
+
+  // Sync Svelte state with browser fullscreen
+  function handleFullscreenChange() {
+    isFullscreen = !!document.fullscreenElement;
+    showExitButton = false;
+    if (!isFullscreen && exitButtonTimeout) {
+      clearTimeout(exitButtonTimeout);
+      exitButtonTimeout = null;
+    }
   }
   
   function handleMouseMove() {
-    if (isFullscreen && !showExitButton) {
+    if (isFullscreen) {
       showExitButton = true;
       if (exitButtonTimeout) clearTimeout(exitButtonTimeout);
       exitButtonTimeout = setTimeout(() => {
@@ -44,6 +66,14 @@
       }, 3000); // Hide after 3 seconds
     }
   }
+  // Mount/unmount fullscreen event listener
+  onMount(() => {
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      if (exitButtonTimeout) clearTimeout(exitButtonTimeout);
+    };
+  });
 
   function log(msg: string) {
     logs = [...logs, msg];
