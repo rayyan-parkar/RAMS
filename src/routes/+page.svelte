@@ -646,9 +646,21 @@
       
       // --- WEBCODECS ENCODING SETUP ---
       const localCanvas = document.createElement('canvas');
-      localCanvas.width = 640;
-      localCanvas.height = 480;
+      // PERFORMANCE: Optimize for low-spec hardware (15 FPS, lower resolution, aggressive throttling)
+      const TARGET_FPS = 15;
+      const FRAME_INTERVAL_MS = 1000 / TARGET_FPS; // ~66ms per frame
+      const VIDEO_WIDTH = 320;   // Reduced from 640
+      const VIDEO_HEIGHT = 240;  // Reduced from 480
+      const VIDEO_BITRATE = 250_000; // Reduced from 1M
+      
+      localCanvas.width = VIDEO_WIDTH;
+      localCanvas.height = VIDEO_HEIGHT;
       const localCtx = localCanvas.getContext('2d');
+      
+      // Frame throttling state
+      let lastEncodeTime = performance.now();
+      let pendingFrameEncode = false;
+      let pendingFrameTimestamp = 0;
       
       // Cached SPS/PPS NALUs extracted from encoder metadata (for prepending to keyframes)
       let encoderSPS: Uint8Array[] = [];
@@ -697,34 +709,68 @@
       try {
         videoEncoder.configure({ 
           codec: 'avc1.42001f', // Constrained Baseline Profile, Level 3.1
-          width: 640, 
-          height: 480, 
-          bitrate: 1_000_000,
-          latencyMode: 'realtime'
+          width: VIDEO_WIDTH, 
+          height: VIDEO_HEIGHT, 
+          bitrate: VIDEO_BITRATE,
+          latencyMode: 'realtime',
+          hardwareAcceleration: 'prefer-software' // Software encoding is often more stable on low-spec
         });
-        log('[OK] VideoEncoder configured for H.264 Constrained Baseline');
+        log(`[OK] VideoEncoder configured: ${VIDEO_WIDTH}x${VIDEO_HEIGHT} @ ${TARGET_FPS}fps, ${VIDEO_BITRATE/1000}kbps`);
       } catch (e) {
         log(`[ERR] VideoEncoder config failed: ${e}`);
       }
 
       let frameCount = 0;
+      let lastKeyframeTime = performance.now();
+      const KEYFRAME_INTERVAL_MS = 2000; // Keyframe every 2 seconds at 15 FPS = every ~30 frames
+      
       function encodeVideo() {
+        const now = performance.now();
+        
+        // Throttle to TARGET_FPS
+        if (now - lastEncodeTime < FRAME_INTERVAL_MS) {
+          requestAnimationFrame(encodeVideo);
+          return;
+        }
+        
+        lastEncodeTime = now;
+        
         if (localVideoRef && localVideoRef.readyState >= 2 && localCtx) {
           localCtx.drawImage(localVideoRef, 0, 0, localCanvas.width, localCanvas.height);
-          const frame = new (window as any).VideoFrame(localCanvas, { timestamp: performance.now() * 1000 });
-          videoEncoder.encode(frame, { keyFrame: (frameCount % 30 === 0) });
-          frame.close();
-          frameCount++;
+          
+          // Emit keyframe periodically (every 2s)
+          const shouldKeyframe = (now - lastKeyframeTime) > KEYFRAME_INTERVAL_MS;
+          if (shouldKeyframe) {
+            lastKeyframeTime = now;
+          }
+          
+          try {
+            const frame = new (window as any).VideoFrame(localCanvas, { timestamp: now * 1000 });
+            videoEncoder.encode(frame, { keyFrame: shouldKeyframe });
+            frame.close();
+            frameCount++;
+            
+            if (frameCount % 30 === 0) {
+              log(`[TX-VIDEO] Encoded frame #${frameCount} (throttled to ${TARGET_FPS}fps)`);
+            }
+          } catch (e) {
+            log(`[ERR] VideoFrame encode failed: ${e}`);
+          }
         }
+        
         requestAnimationFrame(encodeVideo);
       }
       encodeVideo(); // Start grabbing frames
 
-      // Audio Encoding (force 48kHz to match Opus encoder config)
-      const captureAudioCtx = new window.AudioContext({ sampleRate: 48000 });
-      const audioSource = captureAudioCtx.createMediaStreamSource(stream);
+      // Audio Encoding: Reuse playback AudioContext to reduce system load on low-spec hardware
+      // Note: We reuse audioCtx which was already created for playback visualizers
+      if (!audioCtx) {
+        audioCtx = new window.AudioContext({ sampleRate: 48000 });
+      }
+      const audioSource = audioCtx.createMediaStreamSource(stream);
       // Using ScriptProcessorNode (deprecated but widely supported) to grab PCM data
-      const scriptNode = captureAudioCtx.createScriptProcessor(4096, 1, 1);
+      // Smaller buffer size (2048) for lower latency instead of default 4096
+      const scriptNode = audioCtx.createScriptProcessor(2048, 1, 1);
       
       const audioEncoder = new (window as any).AudioEncoder({
         output: (chunk: any) => {
@@ -748,30 +794,39 @@
       }
 
       let audioTime = 0;
-      let sendCount = 0;
+      let audioSendCount = 0;
+      let audioFrameSkip = 0;
       scriptNode.onaudioprocess = (e) => {
         if (connectionState !== 'CONNECTED') return;
         const pcm = e.inputBuffer.getChannelData(0);
         
-        if (sendCount < 3) {
+        if (audioSendCount < 3) {
           log(`[TX-AUDIO] Capturing PCM, length=${pcm.length}`);
-          sendCount++;
+          audioSendCount++;
         }
 
-        const audioData = new (window as any).AudioData({
-          format: 'f32-planar',
-          sampleRate: 48000,
-          numberOfFrames: pcm.length,
-          numberOfChannels: 1,
-          timestamp: audioTime,
-          data: pcm
-        });
-        audioTime += (pcm.length / 48000) * 1000000;
-        audioEncoder.encode(audioData);
-        audioData.close();
+        try {
+          const audioData = new (window as any).AudioData({
+            format: 'f32-planar',
+            sampleRate: 48000,
+            numberOfFrames: pcm.length,
+            numberOfChannels: 1,
+            timestamp: audioTime,
+            data: pcm
+          });
+          audioTime += (pcm.length / 48000) * 1000000;
+          audioEncoder.encode(audioData);
+          audioData.close();
+        } catch (e) {
+          // Backpressure: skip frames if encoder is overloaded
+          audioFrameSkip++;
+          if (audioFrameSkip % 10 === 0) {
+            log(`[WARN] Audio encode backpressure (skipped ${audioFrameSkip} frames)`);
+          }
+        }
       };
       audioSource.connect(scriptNode);
-      scriptNode.connect(captureAudioCtx.destination);
+      scriptNode.connect(audioCtx.destination);
       // --------------------------------
       
       // 4. Listen for incoming remote video

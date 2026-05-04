@@ -394,6 +394,7 @@ async fn dispatch_websocket_message_to_core(
 }
 
 /// Polls the RAMSCore for pending work (transmissions, timeouts, events) and executes it.
+/// PERF: Limits iterations to prevent busy-waiting during heavy media load on low-spec hardware.
 async fn flush_core_outputs_to_network(
     core: &std::sync::Arc<Mutex<RAMSCore>>,
     socket: &UdpSocket,
@@ -401,8 +402,15 @@ async fn flush_core_outputs_to_network(
     event_tx: &mpsc::UnboundedSender<QuickEvent>,
 ) -> Instant {
     let mut next_timeout = Instant::now() + Duration::from_millis(100);
+    let mut event_count = 0;
+    const MAX_EVENTS_PER_DRAIN: usize = 32; // Prevent busy-wait on high-throughput systems
 
     loop {
+        // Exit early if we've processed too many events to prevent stalling other tasks
+        if event_count >= MAX_EVENTS_PER_DRAIN {
+            break;
+        }
+
         let output = match core.lock().await.poll_output() {
             Ok(output) => output,
             Err(err) => {
@@ -420,6 +428,7 @@ async fn flush_core_outputs_to_network(
             str0m::Output::Transmit(transmit) => {
                 // Send encrypted WebRTC data (RTP/RTCP/DTLS) over the UDP socket.
                 let _ = socket.send_to(&transmit.contents, transmit.destination).await;
+                event_count += 1;
             }
             str0m::Output::Event(event) => {
                 // High-level events for the user application.
@@ -470,6 +479,7 @@ async fn flush_core_outputs_to_network(
                         println!("Quick: Other str0m event: {:?}", other);
                     }
                 }
+                event_count += 1;
             }
         }
     }
