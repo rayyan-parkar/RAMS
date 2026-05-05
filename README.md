@@ -1,97 +1,123 @@
-# Tauri + SvelteKit + TypeScript
+# RAMS
 
-This template should help get you started developing with Tauri, SvelteKit and TypeScript in Vite.
+A high-performance, **Sans-IO** WebRTC implementation built with Rust, Tauri, and Svelte. RAMS is designed as a tiered framework, allowing developers to use a low-level RTC core or a high-level automated orchestrator. It also includes a demo Svelte/Tauri app that uses the framework to create a live video conferencing app.
 
-## Usage
+## Architecture
 
-Install dependencies:
+- **Rust Backend**: Leverages `str0m` as its internal state machine and extends it to add support for signaling using the ramscore struct as the primary way to manage the WebRTC state machine.
+- **Tiered Design**: 
+  - **Core**: Protocol-level WebRTC logic and signaling state management.
+  - **Quick**: Automated ICE/STUN discovery and signaling orchestration via WebSockets.
+- **Frontend**: Svelte 5 with a modular component architecture (`Terminal`, `VideoBox`) and a custom H.264 bitstream utility.
+- **IPC Bridge**: High-frequency binary bridge for low-latency media transmission between WebKitGTK and Rust.
+
+Note: There is no support for TURN servers added to this project, it was developed for my Final Year University Project, and is NOT intended for production use in its current state, however (assuming university regulations allow it, and to the best of my knowledge, they do) feel free to use and modify it for your own purposes, or submit Pull Requests, open Issues, etc. !
+
+
+---
+
+## Getting Started
+
+### Nix / NixOS
+
+If you have the [Nix package manager](https://nixos.org/download.html) installed, all dependencies (Rust, Node, GStreamer, WebKitGTK) are managed automatically via the direnv.
 
 ```bash
-bun install
+# Enter the development environment
+nix develop
+# OR if using direnv
+direnv allow
 ```
+After you enable the direnv, it will automatically load all required dependencies for you!
+### Non-Nix Users
 
-Run the web app (no Tauri):
+You must manually install the following system dependencies:
 
-```bash
-bun run dev
-```
+1. **Rust & Bun**: [rustup.rs](https://rustup.rs/) and [bun.sh](https://bun.sh/).
+2. **WebKitGTK**: Required for the Tauri WebView.
+3. **GStreamer**: Required by WebKitGTK for camera and audio access.
 
-Run the Tauri app (Linux/X11):
-
-```bash
-WEBKIT_DISABLE_COMPOSITING_MODE=1 GDK_BACKEND=x11 bun run tauri dev
-```
-
-For now, this is intended to test over localhost only.
-
-## Linux camera dependencies (WebKitGTK + GStreamer)
-
-The Tauri WebView on Linux uses WebKitGTK, which relies on GStreamer for camera capture.
-If you see errors like **appsink/autoaudiosink not found**, install these packages:
+#### Dependency Commands
 
 **Ubuntu / Debian**
 ```bash
 sudo apt update
-sudo apt install gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav
+sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev \
+gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav
 ```
 
 **Fedora**
 ```bash
-sudo dnf install gstreamer1 gstreamer1-plugins-base gstreamer1-plugins-good gstreamer1-plugins-bad-free gstreamer1-plugins-ugly-free gstreamer1-libav
+sudo dnf install webkit2gtk4.1-devel openssl-devel gtk3-devel libappindicator-gtk3-devel librsvg2-devel \
+gstreamer1 gstreamer1-plugins-base gstreamer1-plugins-good gstreamer1-plugins-bad-free gstreamer1-plugins-ugly-free gstreamer1-libav
 ```
 
-**Arch**
+**Arch Linux**
 ```bash
-sudo pacman -S gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav
+sudo pacman -S webkit2gtk-4.1 base-devel curl wget openssl gtk3 libappindicator-gtk3 librsvg \
+gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav
 ```
 
-**openSUSE**
+---
+
+## Usage Instructions
+
+### 1. Start the Signaling Server
+The signaling server handles peer discovery and role assignment.
 ```bash
-sudo zypper install gstreamer gstreamer-plugins-base gstreamer-plugins-good gstreamer-plugins-bad gstreamer-plugins-ugly gstreamer-plugins-libav
+cd signaling-server
+bun install
+bun run start # Starts on ws://127.0.0.1:8090 by default
 ```
 
-## Localhost room-code testing
+Note: You can run the signaling server, and forward the port as long as you change the signaling server IP on each client to match the public IP of the server, or alternatively use tailscale to create a virtual LAN to connect to your peer. 
 
-The UI exposes two fields:
+### 2. Run the RAMS Application
+Launch the desktop client.
+```bash
+bun install
+bun run tauri dev
+```
 
-- `ROOM_KEY`: the room code both peers must share
-- `SIG_SERVER_IP`: the WebSocket URL of your signaling server (defaults to `ws://127.0.0.1:8080`)
+### 3. Connect
+1. Ensure both peers (or two instances on one machine) have the same **Room Key**.
+2. Press **[ INIT UPLINK ]** on both.
+3. The terminal will track the ICE handshake, DTLS completion, and media flow.
 
-To connect **two devices on your LAN**:
+---
 
-1. Run your signaling server on one machine (not included in this repo) and bind it to `0.0.0.0:8080`.
-2. On **both** devices, enter the same `ROOM_KEY`.
-3. Set `SIG_SERVER_IP` to `ws://<HOST_LAN_IP>:8080` on both devices.
-4. Press `[ INIT UPLINK ]` on both devices.
+## Testing
 
-If both peers are on the **same machine**, keep the default `ws://127.0.0.1:8080` and use the same `ROOM_KEY`.
+RAMS includes unit tests covering protocol parsing, state machine transitions, and core media orchestration.
 
-## RAMS WebRTC Framework
+```bash
+# Run all tests
+cd src-tauri
+cargo test
+```
 
-A high-performance sans-IO WebRTC framework designed in Rust leveraging the strictly-typed `str0m` stack, integrated into a desktop application via Tauri and Svelte.
+Additionally, when run with `bun tauri dev` the client includes a very detailed set of logs in the event something goes wrong.
 
-## Running Locally
+- **Note for Linux Users**: If the UI is being strange or flickers, especially on Hyprland or forks of it, try running with: `WEBKIT_DISABLE_COMPOSITING_MODE=1 GDK_BACKEND=x11 bun run tauri dev`.
 
-To test the WebRTC Live Video pipeline across identical network clients over P2P UDP:
+### Features
+The backend can be compiled with specific features:
+- **`default`**: Full suite (Core + Quick).
+- **`core`**: Lightweight build, removing the automated WebSocket orchestrator and its dependencies (`tokio`, `tungstenite`).
 
-1. **Start the Signaling Server**
-   ```bash
-   cd signaling-server
-   bun install
-   bun run start
-   ```
+```bash
+# Build only the core library
+cargo build --no-default-features --features core
+```
 
-2. **Run the RAMS Application**
-   ```bash
-   bun install
-   bun run tauri dev
-   ```
+---
 
-3. **Establish connection**
-   Press **[ INIT UPLINK ]** on both running instances across your local network (ensure you update the UI's `ws://127.0.0.1:8090` IP to your machine's LAN IP if running on separate devices).
-   
-   The local webcam preview should instantly bind, and RTP network video should begin streaming securely through your UDP sockets!
+## License & Credits
 
-## Recommended IDE Setup
+This project was created for educational purposes and is not intended for production use. It uses the str0m crate, and various others which are all included within the Cargo.toml file. If you have an issue with any of the code included here, please open an issue.
 
-[VS Code](https://code.visualstudio.com/) + [Svelte](https://marketplace.visualstudio.com/items?itemName=svelte.svelte-vscode) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer).
+The full-screen icon is provided by Lucide Icons (https://lucide.dev/)
+
+A big thank you to the str0m team (https://github.com/fmilliseconds/str0m) for their wonderful work, glorious documentation and to WebRTC.rs team (https://github.com/webrtc-rs/webrtc) for their wonderful work as well, as well as my supervisor for their guidance during the creation of this project.
+
+https://mit-license.org/

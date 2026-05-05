@@ -6,7 +6,7 @@
   import VideoBox from '$lib/components/VideoBox.svelte';
 
   let roomId = $state('FYP-DEMO-2026');
-  let sigServer = $state('ws://192.168.1.169:8090');
+  let sigServer = $state('ws://127.0.0.1:8090');
   let connectionState = $state('DISCONNECTED');
   let logs: string[] = $state(['System Initialised... Ready.']);
   
