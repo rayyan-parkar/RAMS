@@ -311,7 +311,7 @@ impl RAMSCore {
         Ok(())
     }
 
-    fn handle_candidate(&mut self, candidate: String) -> Result<(), String> {
+    pub fn handle_candidate(&mut self, candidate: String) -> Result<(), String> {
         println!("RAMSCore: handling incoming ICE candidate: {}", candidate);
         let cand = str0m::Candidate::from_sdp_string(&candidate)
             .map_err(|e| format!("Invalid SDP ICE Candidate: {:?}", e))?;
@@ -320,7 +320,7 @@ impl RAMSCore {
         Ok(())
     }
 
-    fn buffer_or_apply_candidate(&mut self, cand: str0m::Candidate) {
+    pub fn buffer_or_apply_candidate(&mut self, cand: str0m::Candidate) {
         let should_buffer = matches!(
             self.signaling_handler.state,
             SignalingState::Idle | SignalingState::WaitingForAnswer

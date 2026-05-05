@@ -33,6 +33,14 @@ pub struct SignalingHandler {
 }
 
 impl SignalingHandler {
+    /// Creates a new SignalingHandler with the specified role.
+    ///
+    /// # Example
+    /// ```
+    /// use rams_lib::signaling::signaling_handler::{SignalingHandler, SignalingRole, SignalingState};
+    /// let handler = SignalingHandler::new(SignalingRole::Initiator);
+    /// assert_eq!(handler.state, SignalingState::Idle);
+    /// ```
     pub fn new(role: SignalingRole) -> Self {
         Self {
             role,
