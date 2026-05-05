@@ -3,6 +3,7 @@ pub mod quick;
 pub mod signaling;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::Mutex;
 use tauri::{AppHandle, Emitter, State};
 use crate::quick::quick_connect::{QuickConnection, QuickEvent};
@@ -50,12 +51,10 @@ async fn start_quick_call(
                         }
                         QuickEvent::MediaData(mid, data) => {
                             // Only log bridge activity every 100 packets to avoid flooding
-                            static mut PKT_COUNT: u64 = 0;
-                            unsafe {
-                                PKT_COUNT += 1;
-                                if PKT_COUNT % 100 == 0 {
-                                    println!("BRIDGE: Forwarded {} packets total. Last: {} ({} bytes)", PKT_COUNT, mid, data.len());
-                                }
+                            static PKT_COUNT: AtomicU64 = AtomicU64::new(0);
+                            let count = PKT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+                            if count % 100 == 0 {
+                                println!("BRIDGE: Forwarded {} packets total. Last: {} ({} bytes)", count, mid, data.len());
                             }
                             let _ = app_handle.emit("webrtc-media-data", (mid, data));
                         }
