@@ -4,31 +4,34 @@ pub enum SignalingRole {
     /// Initiates an SDP Offer.
     Initiator,
 
-    /// Waits for an SDP Offer and creates an Answer.
+    /// Responder role; processes SDP Offer and generates SDP Answer.
     Responder,
 }
 
-/// Represents the logical state of the signaling process
+/// Represents the logical state of the JSEP signaling process.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SignalingState {
-    /// Initial state, waiting for peer (Initiator) or waiting for offer (Responder)
+    /// Initial state: Ready for room assignment or waiting for incoming Offer.
     Idle,
 
-    /// Initiator only: Offer sent, waiting for remote SDP Answer
+    /// Initiator state: Local SDP Offer created and sent to signaling server.
     WaitingForAnswer,
     
-    /// SDP handshake complete, now exchanging ICE Candidates
+    /// Handshake active: SDP Answer has been exchanged; ICE trickling is underway.
     TricklingIce,
     
-    /// ICE candidates exchanged and a connection has been established
+    /// Signaling complete: Session description and ICE candidates are fully synchronized.
     Stable,
 
-    /// Something went wrong
+    /// Fatal error: Handshake or negotiation failed.
     Error(String),
 }
 
+/// Manages the WebRTC signaling state machine for a specific role.
 pub struct SignalingHandler {
+    /// The assigned role (Initiator/Responder) for this session.
     pub role: SignalingRole,
+    /// The current state of the JSEP handshake.
     pub state: SignalingState,
 }
 

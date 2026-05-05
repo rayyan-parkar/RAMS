@@ -1,24 +1,30 @@
 pub mod core;
+#[cfg(feature = "quick")]
 pub mod quick;
 pub mod signaling;
 
+#[cfg(feature = "quick")]
 use std::sync::Arc;
+#[cfg(feature = "quick")]
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "quick")]
 use tokio::sync::Mutex;
+#[cfg(feature = "quick")]
 use tauri::{AppHandle, Emitter, State};
+#[cfg(feature = "quick")]
 use crate::quick::quick_connect::{QuickConnection, QuickEvent};
 
+/// Global application state managed by Tauri.
+#[cfg(feature = "quick")]
 struct AppState {
+    /// Atomic wrapper around the active WebRTC connection.
     connection: Arc<Mutex<Option<QuickConnection>>>,
 }
 
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+/// Initializes a new WebRTC session via the QuickConnect orchestrator.
+/// Bridges background QuickEvents to the Tauri frontend via event emission.
 #[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
-
-#[tauri::command]
+#[cfg(feature = "quick")]
 async fn start_quick_call(
     room_id: String,
     ws_url: String,
@@ -36,7 +42,7 @@ async fn start_quick_call(
         Ok((conn, mut event_rx)) => {
             *conn_guard = Some(conn);
 
-            // Spawn a task to bridge QuickEvents to Tauri events
+            // Spawn a task to bridge internal QuickEvents to the frontend.
             tokio::spawn(async move {
                 while let Some(event) = event_rx.recv().await {
                     match event {
@@ -50,7 +56,7 @@ async fn start_quick_call(
                             let _ = app_handle.emit("webrtc-ice-state", state);
                         }
                         QuickEvent::MediaData(mid, data) => {
-                            // Only log bridge activity every 100 packets to avoid flooding
+                            // Atomic packet counter for throttled bridge logging.
                             static PKT_COUNT: AtomicU64 = AtomicU64::new(0);
                             let count = PKT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
                             if count % 100 == 0 {
@@ -68,7 +74,9 @@ async fn start_quick_call(
     }
 }
 
+/// Tears down the active WebRTC session and cleans up background tasks.
 #[tauri::command]
+#[cfg(feature = "quick")]
 async fn close_call(state: State<'_, AppState>) -> Result<(), String> {
     println!("Tauri: close_call");
     let mut conn_guard = state.connection.lock().await;
@@ -80,7 +88,9 @@ async fn close_call(state: State<'_, AppState>) -> Result<(), String> {
     }
 }
 
+/// Routes raw video frames from the frontend to the WebRTC encoder/packetizer.
 #[tauri::command]
+#[cfg(feature = "quick")]
 async fn send_video_chunk(
     data: Vec<u8>,
     timestamp: u64,
@@ -96,7 +106,9 @@ async fn send_video_chunk(
     Ok(())
 }
 
+/// Routes raw audio frames from the frontend to the WebRTC encoder/packetizer.
 #[tauri::command]
+#[cfg(feature = "quick")]
 async fn send_audio_chunk(
     data: Vec<u8>,
     timestamp: u64,
@@ -112,14 +124,31 @@ async fn send_audio_chunk(
     Ok(())
 }
 
+/// Main entry point for the RAMS Tauri application.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
-        .manage(AppState {
-            connection: Arc::new(Mutex::new(None)),
-        })
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init());
+
+    #[cfg(feature = "quick")]
+    {
+        builder = builder
+            .manage(AppState {
+                connection: Arc::new(Mutex::new(None)),
+            })
+            .invoke_handler(tauri::generate_handler![
+                start_quick_call,
+                close_call,
+                send_video_chunk,
+                send_audio_chunk,
+            ]);
+    }
+
+    builder
         .setup(|app| {
+            // WebKitGTK specific configuration for Linux/NixOS environments.
+            // Automatically grants media permissions to bypass UI prompts in embedded views.
             #[cfg(any(
                 target_os = "linux",
                 target_os = "dragonfly",
@@ -143,13 +172,6 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            greet,
-            start_quick_call,
-            close_call,
-            send_video_chunk,
-            send_audio_chunk,
-        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

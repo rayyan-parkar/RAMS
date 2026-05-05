@@ -82,13 +82,16 @@ impl RAMSCore {
         
         match &output {
             str0m::Output::Event(str0m::Event::Connected) => {
+                // DTLS/ICE stack is now fully operational
                 println!("RAMSCore: DTLS handshake completed successfully, WebRTC connection established");
                 if self.signaling_handler.state == SignalingState::TricklingIce {
+                    // Transition to Stable as signaling is now essentially complete
                     println!("RAMSCore: connected event observed, moving signaling state to Stable");
                     let _ = self.signaling_handler.advance(SignalingState::Stable);
                 }
             }
             str0m::Output::Event(str0m::Event::MediaAdded(media)) => {
+                // Track assigned MIDs for later RTP writing
                 println!(
                     "RAMSCore: MediaAdded mid={:?}, kind={:?}, direction={:?}",
                     media.mid,
@@ -104,6 +107,7 @@ impl RAMSCore {
                 }
             }
             str0m::Output::Event(str0m::Event::IceConnectionStateChange(state)) => {
+                // Monitor ICE state transitions for debugging NAT/firewall issues
                 println!("RAMSCore: ICE Connection State Change: {:?}", state);
                 match state {
                     str0m::IceConnectionState::Connected | str0m::IceConnectionState::Completed => {
@@ -113,6 +117,7 @@ impl RAMSCore {
                 }
             }
             str0m::Output::Event(str0m::Event::MediaData(data)) => {
+                // Throttle logging to prevent console saturation from high-frequency RTP packets
                 let now = Instant::now();
                 if now.duration_since(self.last_media_log_time) >= std::time::Duration::from_secs(1) {
                     println!("RAMSCore Status: Receiving Media ({} bytes, mid={:?})", data.data.len(), data.mid);
@@ -163,6 +168,7 @@ impl RAMSCore {
         let mut sdp_api = self.rtc.sdp_api();
         let mut staged_changes = 0usize;
 
+        // Synchronize media mid trackers
         if let Some(direction) = self.pending_audio_direction {
             println!(
                 "RAMSCore: staging pending audio media in offer with direction {:?}",
@@ -183,6 +189,7 @@ impl RAMSCore {
             staged_changes += 1;
         }
 
+        // Finalize SDP structure and extract pending change handle
         let (offer, pending) = sdp_api
             .apply()
             .ok_or_else(|| {
@@ -194,6 +201,7 @@ impl RAMSCore {
                 )
             })?;
 
+        // Clear staged directions as they are now part of the pending offer
         if self.pending_audio_direction.is_some() {
             self.pending_audio_direction = None;
         }
@@ -215,6 +223,7 @@ impl RAMSCore {
     }
 
     /// Handles incoming signaling messages and updates the signaling state machine.
+    /// This is the entry point for all SDP and ICE negotiations from the remote peer.
     pub fn handle_signaling(
         &mut self,
         msg: SignalingMessage,
@@ -225,6 +234,7 @@ impl RAMSCore {
         println!("RAMSCore: handle_signaling({:?}) in role {:?}, state {:?}", msg, self.signaling_handler.role, self.signaling_handler.state);
         match msg {
             SignalingMessage::Offer { sdp } => {
+                // Negotiate incoming offer and produce an SDP Answer
                 if self.signaling_handler.role != SignalingRole::Responder {
                     return Err("Initiator cannot accept an Offer".to_string());
                 }
@@ -232,6 +242,7 @@ impl RAMSCore {
                 Ok(Some(answer))
             }
             SignalingMessage::Answer { sdp } => {
+                // Apply incoming answer to the previously created local offer
                 if self.signaling_handler.role != SignalingRole::Initiator {
                     return Err("Responder cannot accept an Answer".to_string());
                 }
@@ -239,6 +250,7 @@ impl RAMSCore {
                 Ok(None)
             }
             SignalingMessage::Candidate { candidate } => {
+                // Route ICE candidate to the RTC stack or buffer it
                 self.handle_candidate(candidate)?;
                 Ok(None)
             }
@@ -320,6 +332,8 @@ impl RAMSCore {
         Ok(())
     }
 
+    /// Decides whether to buffer an ICE candidate or apply it immediately.
+    /// Candidates received before the SDP handshake (Offer/Answer) must be buffered.
     pub fn buffer_or_apply_candidate(&mut self, cand: str0m::Candidate) {
         let should_buffer = matches!(
             self.signaling_handler.state,
@@ -333,14 +347,17 @@ impl RAMSCore {
         );
 
         if should_buffer {
+            // Buffer candidate for later flushing after SDP acceptance
             self.pending_remote_candidates.push(cand);
             println!("RAMSCore: pending_remote_candidates size = {}", self.pending_remote_candidates.len());
         } else {
+            // Apply directly if the handshake is already sufficient
             self.rtc.add_remote_candidate(cand);
             println!("RAMSCore: candidate applied directly to RTC");
         }
     }
 
+    /// Flushes all buffered ICE candidates into the str0m RTC stack.
     fn flush_pending_candidates(&mut self) {
         println!("RAMSCore: flushing {} pending ICE candidates", self.pending_remote_candidates.len());
         for cand in self.pending_remote_candidates.drain(..) {
@@ -362,13 +379,16 @@ impl RAMSCore {
         writer.write(pt, now, rtp_time, data).map_err(|e| e.to_string())
     }
 
-    /// Writes a media chunk (VP8/WebM) to the specified MID.
+    /// Writes a media chunk (e.g., H.264/VP8/WebM) to the specified MID.
+    /// Expects timestamp in microseconds for high-precision RTP timing.
     pub fn write_media(&mut self, mid: Mid, data: Vec<u8>, timestamp: u64) -> Result<(), String> {
         let writer = self.rtc.writer(mid).ok_or_else(|| "No writer for MID".to_string())?;
         
+        // Resolve Payload Type (PT) from the media writer's parameters
         let pt = writer.payload_params().next().map(|p| p.pt()).ok_or_else(|| "No PT for MID".to_string())?;
         
         let now = Instant::now();
+        // Convert raw timestamp to str0m-native MediaTime using Microsecond frequency
         let rtp_time = str0m::media::MediaTime::new(
             timestamp, 
             str0m::media::Frequency::MICROS

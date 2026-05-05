@@ -17,16 +17,20 @@ use str0m::media::Direction;
 use crate::core::RAMSCore;
 use crate::signaling::{SignalingMessage, SignalingRole};
 
-/// Events emitted by the quick connection.
+/// Events emitted by the QuickConnection loop to the UI/Frontend.
 #[derive(Debug, Clone)]
 pub enum QuickEvent {
+    /// Room discovery/connection status
     Connecting(String),
+    /// Signaling and ICE handshake complete
     Connected,
+    /// Detailed ICE state (checking, connected, completed, etc)
     IceState(String),
+    /// Decrypted media payload (Opus/H264)
     MediaData(String, Vec<u8>),
 }
 
-/// Handle to a running quick connection.
+/// Handle to a running WebRTC connection and its background task.
 pub struct QuickConnection {
     pub core: std::sync::Arc<Mutex<RAMSCore>>,
     pub(crate) shutdown: Option<oneshot::Sender<()>>,
@@ -129,8 +133,8 @@ impl TryFrom<WireMessage> for SignalingMessage {
     }
 }
 
-/// Orchestrator function that sets up a WebRTC session.
-/// It performs the initial handshake, sets up local resources, and spawns the background runner.
+/// Entry point for establishing a room-based WebRTC session.
+/// Handles WebSocket initialization, role negotiation, and background task spawning.
 pub async fn connect(ws_url: &str, room: &str) -> Result<(QuickConnection, mpsc::UnboundedReceiver<QuickEvent>), QuickError> {
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     println!("Quick: Connecting to {} for room {}", ws_url, room);
@@ -171,7 +175,7 @@ pub async fn connect(ws_url: &str, room: &str) -> Result<(QuickConnection, mpsc:
     }, event_rx))
 }
 
-/// Helper to handle the initial Join/Joined handshake on the WebSocket.
+/// Executes the synchronous Join/Joined signaling phase to determine peer role (Initiator/Responder).
 async fn negotiate_signaling_role<R, W>(
     ws_read: &mut R,
     ws_write: &mut W,
@@ -212,8 +216,12 @@ where
     Err(QuickError::Protocol("Signaling server closed before joining".to_string()))
 }
 
-/// The main event loop that orchestrates all I/O for the WebRTC session.
-/// It uses tokio::select! to multiplex between signaling, media data, and library timeouts.
+/// The main event loop that orchestrates all asynchronous I/O for the WebRTC session.
+/// Multiplexes between:
+/// 1. WebSocket signaling (Incoming/Outgoing)
+/// 2. UDP media packets (STUN, DTLS, RTP)
+/// 3. str0m engine timeouts (Internal clock)
+/// 4. Graceful shutdown signals
 async fn run_connection_loop(
     core: std::sync::Arc<Mutex<RAMSCore>>,
     mut shutdown_rx: oneshot::Receiver<()>,
@@ -461,7 +469,7 @@ async fn add_local_candidates(
     Ok(addr.ip())
 }
 
-/// Translates incoming signaling messages (Offers, Answers, Candidates) into actions for the RAMSCore.
+/// Translates WebSocket WireMessages into RAMSCore signaling actions.
 async fn dispatch_websocket_message_to_core(
     core: &std::sync::Arc<Mutex<RAMSCore>>,
     msg: WireMessage,
@@ -473,32 +481,25 @@ async fn dispatch_websocket_message_to_core(
             println!("Quick: PeerJoined received");
             let mut core = core.lock().await;
             if core.signaling_handler.role == SignalingRole::Initiator {
+                // Initial offer generation
                 println!("Quick: Initiator creating offer due to peer join");
                 let offer = core.create_offer()?;
-                println!("Quick: Sending SDP offer: {:?}", offer);
                 let _ = ws_tx.send(offer.into());
-            } else {
-                println!("Quick: PeerJoined ignored because this side is not initiator");
             }
             Ok(())
         }
         msg @ (WireMessage::Offer { .. } | WireMessage::Answer { .. } | WireMessage::Candidate { .. }) => {
-            // Pass signaling payloads directly to the core state machine.
+            // Map wire message to internal signaling representation
             if let Ok(signaling) = SignalingMessage::try_from(msg) {
-                println!("Quick: Received remote signaling: {:?}", signaling);
                 let mut core = core.lock().await;
                 if let Some(response) = core.handle_signaling(signaling)? {
-                    println!("Quick: Sending signaling response: {:?}", response);
+                    // Send generated Answer/Candidate back over the wire
                     let _ = ws_tx.send(response.into());
-                } else {
-                    println!("Quick: Signal consumed without immediate response");
                 }
-            } else {
-                println!("Quick: Ignored non-signaling websocket message");
             }
             Ok(())
         }
-        WireMessage::Joined { .. } | WireMessage::Join { .. } => Ok(()),
+        _ => Ok(()),
     }
 }
 
@@ -596,6 +597,7 @@ async fn flush_core_outputs_to_network(
     next_timeout
 }
 
+/// Binds a UDP socket to an available port for media transmission.
 async fn bind_local_socket() -> Result<UdpSocket, std::io::Error> {
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
     UdpSocket::bind(addr).await
@@ -726,65 +728,4 @@ pub fn parse_stun_srflx(data: &[u8]) -> Option<SocketAddr> {
         pos += (attr_len + 3) & !3; // Padding
     }
     None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_wire_message_serialization() {
-        let msg = WireMessage::Join { room: "test-room".to_string() };
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("\"type\":\"join\""));
-        assert!(json.contains("\"room\":\"test-room\""));
-    }
-
-    #[test]
-    fn test_stun_parsing_xor_mapped() {
-        // A real-world XOR-MAPPED-ADDRESS response snippet
-        // Magic Cookie: 0x2112A442
-        // XOR'd Port: 0x2112 ^ 12345 (0x3039) = 0x112B
-        // XOR'd IP: 192.168.1.1 ^ Magic Cookie
-        let mut data = vec![0u8; 40];
-        data[0..2].copy_from_slice(&[0x01, 0x01]); // Binding Success
-        data[2..4].copy_from_slice(&20u16.to_be_bytes()); // Length
-        
-        let attr_pos = 20;
-        data[attr_pos..attr_pos+2].copy_from_slice(&0x0020u16.to_be_bytes()); // XOR-MAPPED-ADDRESS
-        data[attr_pos+2..attr_pos+4].copy_from_slice(&8u16.to_be_bytes()); // Length
-        data[attr_pos+5] = 0x01; // IPv4
-        
-        // Port 12345 (0x3039) -> XOR with 0x2112 = 0x112B
-        data[attr_pos+6..attr_pos+8].copy_from_slice(&0x112Bu16.to_be_bytes());
-        
-        // IP 1.2.3.4 -> XOR with 0x2112A442
-        // 1 ^ 0x21 = 0x20
-        // 2 ^ 0x12 = 0x10
-        // 3 ^ 0xA4 = 0xA7
-        // 4 ^ 0x42 = 0x46
-        data[attr_pos+8..attr_pos+12].copy_from_slice(&[0x20, 0x10, 0xA7, 0x46]);
-
-        let result = parse_stun_srflx(&data).expect("Failed to parse STUN");
-        assert_eq!(result.port(), 12345);
-        assert_eq!(result.ip().to_string(), "1.2.3.4");
-    }
-
-    #[test]
-    fn test_stun_parsing_mapped_address() {
-        let mut data = vec![0u8; 40];
-        data[0..2].copy_from_slice(&[0x01, 0x01]); // Binding Success
-        data[2..4].copy_from_slice(&20u16.to_be_bytes()); // Length
-        
-        let attr_pos = 20;
-        data[attr_pos..attr_pos+2].copy_from_slice(&0x0001u16.to_be_bytes()); // MAPPED-ADDRESS
-        data[attr_pos+2..attr_pos+4].copy_from_slice(&8u16.to_be_bytes()); // Length
-        data[attr_pos+5] = 0x01; // IPv4
-        data[attr_pos+6..attr_pos+8].copy_from_slice(&12345u16.to_be_bytes()); // Port
-        data[attr_pos+8..attr_pos+12].copy_from_slice(&[1, 2, 3, 4]); // IP
-
-        let result = parse_stun_srflx(&data).expect("Failed to parse STUN");
-        assert_eq!(result.port(), 12345);
-        assert_eq!(result.ip().to_string(), "1.2.3.4");
-    }
 }

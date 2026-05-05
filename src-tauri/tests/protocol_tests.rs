@@ -1,3 +1,4 @@
+#![cfg(feature = "quick")]
 use rams_lib::quick::quick_connect::{WireMessage, parse_stun_srflx};
 
 #[test]
