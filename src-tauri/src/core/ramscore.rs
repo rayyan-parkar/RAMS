@@ -4,6 +4,22 @@ use str0m::change::{SdpAnswer, SdpOffer, SdpPendingOffer};
 use str0m::media::{Direction, MediaKind};
 use crate::signaling::{SignalingHandler, SignalingMessage, SignalingRole, SignalingState};
 use str0m::media::{Mid};
+use std::sync::OnceLock;
+
+static VERBOSE_LOGGING: OnceLock<bool> = OnceLock::new();
+
+#[inline(always)]
+pub fn is_verbose() -> bool {
+    *VERBOSE_LOGGING.get_or_init(|| std::env::var("RAMS_VERBOSE").is_ok())
+}
+
+macro_rules! rams_println {
+    ($($arg:tt)*) => {
+        if is_verbose() {
+            println!($($arg)*);
+        }
+    };
+}
 
 /// A superset of str0m that implements a signaling state machine.
 pub struct RAMSCore {
@@ -34,7 +50,7 @@ pub struct RAMSCore {
 impl RAMSCore {
     /// Creates a new low-level RAMSCore object
     pub fn new(role: SignalingRole) -> Self {
-        println!("RAMSCore: creating new core with role {:?}", role);
+        rams_println!("RAMSCore: creating new core with role {:?}", role);
         let now = Instant::now();
         Self {
             rtc: str0m::Rtc::new(now),
@@ -71,28 +87,28 @@ impl RAMSCore {
              if let str0m::Output::Transmit(transmit) = &output {
                  let now = Instant::now();
                  if now.duration_since(self.last_transmit_log_time) >= std::time::Duration::from_secs(1) {
-                     println!("RAMSCore Status: Transmitting UDP ({} bytes to {})", transmit.contents.len(), transmit.destination);
+                     rams_println!("RAMSCore Status: Transmitting UDP ({} bytes to {})", transmit.contents.len(), transmit.destination);
                      self.last_transmit_log_time = now;
                  }
              } else if !matches!(&output, str0m::Output::Event(str0m::Event::MediaData(_))) {
                  // For other non-media events, log them normally
-                 println!("RAMSCore: poll_output -> {:?}", output);
+                 rams_println!("RAMSCore: poll_output -> {:?}", output);
              }
         }
         
         match &output {
             str0m::Output::Event(str0m::Event::Connected) => {
                 // DTLS/ICE stack is now fully operational
-                println!("RAMSCore: DTLS handshake completed successfully, WebRTC connection established");
+                rams_println!("RAMSCore: DTLS handshake completed successfully, WebRTC connection established");
                 if self.signaling_handler.state == SignalingState::TricklingIce {
                     // Transition to Stable as signaling is now essentially complete
-                    println!("RAMSCore: connected event observed, moving signaling state to Stable");
+                    rams_println!("RAMSCore: connected event observed, moving signaling state to Stable");
                     let _ = self.signaling_handler.advance(SignalingState::Stable);
                 }
             }
             str0m::Output::Event(str0m::Event::MediaAdded(media)) => {
                 // Track assigned MIDs for later RTP writing
-                println!(
+                rams_println!(
                     "RAMSCore: MediaAdded mid={:?}, kind={:?}, direction={:?}",
                     media.mid,
                     media.kind,
@@ -100,18 +116,18 @@ impl RAMSCore {
                 );
                 if media.kind == str0m::media::MediaKind::Video {
                     self.video_mid = Some(media.mid);
-                    println!("RAMSCore: stored video_mid = {:?}", self.video_mid);
+                    rams_println!("RAMSCore: stored video_mid = {:?}", self.video_mid);
                 } else if media.kind == str0m::media::MediaKind::Audio {
                     self.audio_mid = Some(media.mid);
-                    println!("RAMSCore: stored audio_mid = {:?}", self.audio_mid);
+                    rams_println!("RAMSCore: stored audio_mid = {:?}", self.audio_mid);
                 }
             }
             str0m::Output::Event(str0m::Event::IceConnectionStateChange(state)) => {
                 // Monitor ICE state transitions for debugging NAT/firewall issues
-                println!("RAMSCore: ICE Connection State Change: {:?}", state);
+                rams_println!("RAMSCore: ICE Connection State Change: {:?}", state);
                 match state {
                     str0m::IceConnectionState::Connected | str0m::IceConnectionState::Completed => {
-                        println!("RAMSCore: ICE connection ready, DTLS handshake will now initiate");
+                        rams_println!("RAMSCore: ICE connection ready, DTLS handshake will now initiate");
                     }
                     _ => {}
                 }
@@ -120,7 +136,7 @@ impl RAMSCore {
                 // Throttle logging to prevent console saturation from high-frequency RTP packets
                 let now = Instant::now();
                 if now.duration_since(self.last_media_log_time) >= std::time::Duration::from_secs(1) {
-                    println!("RAMSCore Status: Receiving Media ({} bytes, mid={:?})", data.data.len(), data.mid);
+                    rams_println!("RAMSCore Status: Receiving Media ({} bytes, mid={:?})", data.data.len(), data.mid);
                     self.last_media_log_time = now;
                 }
             }
@@ -132,7 +148,7 @@ impl RAMSCore {
 
     /// Adds an audio track with the specified direction.
     pub fn add_audio(&mut self, direction: Direction) {
-        println!(
+        rams_println!(
             "RAMSCore: queueing audio media with direction {:?} for next offer",
             direction
         );
@@ -141,7 +157,7 @@ impl RAMSCore {
 
     /// Adds a video track with the specified direction.
     pub fn add_video(&mut self, direction: Direction) {
-        println!(
+        rams_println!(
             "RAMSCore: queueing video media with direction {:?} for next offer",
             direction
         );
@@ -151,13 +167,13 @@ impl RAMSCore {
     /// Adds a data channel with the given label.
     pub fn add_data_channel(&mut self, label: impl Into<String>) {
         let label = label.into();
-        println!("RAMSCore: adding data channel {}", label);
+        rams_println!("RAMSCore: adding data channel {}", label);
         self.rtc.sdp_api().add_channel(label.into());
     }
 
     /// Negotiates any pending local changes (tracks, channels) and creates an SDP Offer.
     pub fn create_offer(&mut self) -> Result<SignalingMessage, String> {
-        println!("RAMSCore: create_offer requested with role {:?} and signaling state {:?}", self.signaling_handler.role, self.signaling_handler.state);
+        rams_println!("RAMSCore: create_offer requested with role {:?} and signaling state {:?}", self.signaling_handler.role, self.signaling_handler.state);
         if self.signaling_handler.role != SignalingRole::Initiator {
             return Err("Only the Initiator can create an offer".to_string());
         }
@@ -170,7 +186,7 @@ impl RAMSCore {
 
         // Synchronize media mid trackers
         if let Some(direction) = self.pending_audio_direction {
-            println!(
+            rams_println!(
                 "RAMSCore: staging pending audio media in offer with direction {:?}",
                 direction
             );
@@ -180,7 +196,7 @@ impl RAMSCore {
         }
 
         if let Some(direction) = self.pending_video_direction {
-            println!(
+            rams_println!(
                 "RAMSCore: staging pending video media in offer with direction {:?}",
                 direction
             );
@@ -209,13 +225,13 @@ impl RAMSCore {
             self.pending_video_direction = None;
         }
 
-        println!("RAMSCore: created SDP offer and pending change set");
+        rams_println!("RAMSCore: created SDP offer and pending change set");
 
         self.pending_offer = Some(pending);
         self.signaling_handler
             .advance(SignalingState::WaitingForAnswer)?;
 
-        println!("RAMSCore: signaling state updated to WaitingForAnswer");
+        rams_println!("RAMSCore: signaling state updated to WaitingForAnswer");
 
         Ok(SignalingMessage::Offer {
             sdp: offer.to_sdp_string(),
@@ -231,7 +247,7 @@ impl RAMSCore {
         // Sync clock to prevent DTLS timeouts due to time jumps during signaling wait
         let _ = self.rtc.handle_input(str0m::Input::Timeout(Instant::now()));
         
-        println!("RAMSCore: handle_signaling({:?}) in role {:?}, state {:?}", msg, self.signaling_handler.role, self.signaling_handler.state);
+        rams_println!("RAMSCore: handle_signaling({:?}) in role {:?}, state {:?}", msg, self.signaling_handler.role, self.signaling_handler.state);
         match msg {
             SignalingMessage::Offer { sdp } => {
                 // Negotiate incoming offer and produce an SDP Answer
@@ -258,13 +274,13 @@ impl RAMSCore {
     }
 
     fn handle_offer(&mut self, sdp: String) -> Result<SignalingMessage, String> {
-        println!("RAMSCore: handling incoming offer ({} bytes)", sdp.len());
+        rams_println!("RAMSCore: handling incoming offer ({} bytes)", sdp.len());
         // Guard: Only accept offer if not already in TricklingIce or Stable
         if self.signaling_handler.state == SignalingState::TricklingIce || self.signaling_handler.state == SignalingState::Stable {
             return Err("Offer already accepted or in invalid state for offer".to_string());
         }
         self.signaling_handler.advance(SignalingState::TricklingIce)?;
-        println!("RAMSCore: responder state moved to TricklingIce before accepting offer");
+        rams_println!("RAMSCore: responder state moved to TricklingIce before accepting offer");
 
         let offer = SdpOffer::from_sdp_string(&sdp)
             .map_err(|e| format!("Invalid SDP Offer: {:?}", e))?;
@@ -279,11 +295,11 @@ impl RAMSCore {
         let answer = sdp_api.accept_offer(offer)
             .map_err(|e| format!("Failed to accept offer: {:?}", e))?;
 
-        println!("RAMSCore: offer accepted and SDP answer prepared");
+        rams_println!("RAMSCore: offer accepted and SDP answer prepared");
 
         self.flush_pending_candidates();
-        println!("RAMSCore: flushed pending remote ICE candidates after offer");
-        println!("RAMSCore: signaling state after offer: {:?}", self.signaling_handler.state);
+        rams_println!("RAMSCore: flushed pending remote ICE candidates after offer");
+        rams_println!("RAMSCore: signaling state after offer: {:?}", self.signaling_handler.state);
 
         Ok(SignalingMessage::Answer {
             sdp: answer.to_sdp_string(),
@@ -291,7 +307,7 @@ impl RAMSCore {
     }
 
     fn handle_answer(&mut self, sdp: String) -> Result<(), String> {
-        println!("RAMSCore: handling incoming answer ({} bytes)", sdp.len());
+        rams_println!("RAMSCore: handling incoming answer ({} bytes)", sdp.len());
         // Guard: Only accept answer if we have a pending offer
         let pending = self
             .pending_offer
@@ -300,13 +316,13 @@ impl RAMSCore {
 
         // Guard: Only accept answer if not already in TricklingIce or Stable
         if self.signaling_handler.state == SignalingState::TricklingIce || self.signaling_handler.state == SignalingState::Stable {
-            println!("RAMSCore: WARNING: Already in TricklingIce or Stable state before answer application");
+            rams_println!("RAMSCore: WARNING: Already in TricklingIce or Stable state before answer application");
         } else {
             self.signaling_handler.advance(SignalingState::TricklingIce)?;
-            println!("RAMSCore: signaling state updated to TricklingIce before answer application");
+            rams_println!("RAMSCore: signaling state updated to TricklingIce before answer application");
         }
         self.flush_pending_candidates();
-        println!("RAMSCore: flushed pending remote ICE candidates before answer application");
+        rams_println!("RAMSCore: flushed pending remote ICE candidates before answer application");
 
         let answer = SdpAnswer::from_sdp_string(&sdp)
             .map_err(|e| format!("Invalid SDP Answer: {:?}", e))?;
@@ -317,14 +333,14 @@ impl RAMSCore {
             return Err(err_msg);
         }
 
-        println!("RAMSCore: answer accepted successfully");
-        println!("RAMSCore: signaling state after answer: {:?}", self.signaling_handler.state);
+        rams_println!("RAMSCore: answer accepted successfully");
+        rams_println!("RAMSCore: signaling state after answer: {:?}", self.signaling_handler.state);
 
         Ok(())
     }
 
     pub fn handle_candidate(&mut self, candidate: String) -> Result<(), String> {
-        println!("RAMSCore: handling incoming ICE candidate: {}", candidate);
+        rams_println!("RAMSCore: handling incoming ICE candidate: {}", candidate);
         let cand = str0m::Candidate::from_sdp_string(&candidate)
             .map_err(|e| format!("Invalid SDP ICE Candidate: {:?}", e))?;
 
@@ -340,7 +356,7 @@ impl RAMSCore {
             SignalingState::Idle | SignalingState::WaitingForAnswer
         );
 
-        println!(
+        rams_println!(
             "RAMSCore: {} ICE candidate while in state {:?}",
             if should_buffer { "buffering" } else { "applying" },
             self.signaling_handler.state
@@ -349,17 +365,17 @@ impl RAMSCore {
         if should_buffer {
             // Buffer candidate for later flushing after SDP acceptance
             self.pending_remote_candidates.push(cand);
-            println!("RAMSCore: pending_remote_candidates size = {}", self.pending_remote_candidates.len());
+            rams_println!("RAMSCore: pending_remote_candidates size = {}", self.pending_remote_candidates.len());
         } else {
             // Apply directly if the handshake is already sufficient
             self.rtc.add_remote_candidate(cand);
-            println!("RAMSCore: candidate applied directly to RTC");
+            rams_println!("RAMSCore: candidate applied directly to RTC");
         }
     }
 
     /// Flushes all buffered ICE candidates into the str0m RTC stack.
     fn flush_pending_candidates(&mut self) {
-        println!("RAMSCore: flushing {} pending ICE candidates", self.pending_remote_candidates.len());
+        rams_println!("RAMSCore: flushing {} pending ICE candidates", self.pending_remote_candidates.len());
         for cand in self.pending_remote_candidates.drain(..) {
             self.rtc.add_remote_candidate(cand);
         }

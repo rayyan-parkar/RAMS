@@ -35,3 +35,11 @@ quick = ["core", "tokio", "tokio-tungstenite", "futures-util"]
 
 [target."cfg(any(target_os = \"linux\", target_os = \"dragonfly\", target_os = \"freebsd\", target_os = \"openbsd\", target_os = \"netbsd\"))".dependencies]
 webkit2gtk = { version = "2.0.2", features = ["v2_40"] }
+
+[[bench]]
+name = "benchmark_suite"
+harness = false
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["async_tokio"] }
+webrtc = "0.11"

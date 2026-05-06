@@ -257,6 +257,11 @@ async fn run_connection_loop(
     println!("Quick: Creating local ICE candidates (host + srflx)");
     let local_ip = add_local_candidates(&core, &socket, &ws_tx, &ws_url, &stun_servers).await.map_err(QuickError::Protocol)?;
 
+    let (mut cached_video_mid, mut cached_audio_mid) = {
+        let guard = core.lock().await;
+        (guard.video_mid, guard.audio_mid)
+    };
+
     let mut timeout = Instant::now() + Duration::from_millis(100);
     let mut udp_buf = vec![0u8; 2000];
     let mut last_udp_log = Instant::now();
@@ -348,7 +353,7 @@ async fn run_connection_loop(
         }
 
         // After every event, we check if the engine has data it wants to send out
-        timeout = flush_core_outputs_to_network(&core, &socket, &ws_tx, &event_tx).await;
+        timeout = flush_core_outputs_to_network(&core, &socket, &ws_tx, &event_tx, &mut cached_video_mid, &mut cached_audio_mid).await;
 
         // If WS died, schedule a single reconnect attempt per loop iteration (avoids blocking UDP loop)
         if !ws_alive {
@@ -510,6 +515,8 @@ async fn flush_core_outputs_to_network(
     socket: &UdpSocket,
     _ws_tx: &mpsc::UnboundedSender<WireMessage>,
     event_tx: &mpsc::UnboundedSender<QuickEvent>,
+    cached_video_mid: &mut Option<str0m::media::Mid>,
+    cached_audio_mid: &mut Option<str0m::media::Mid>,
 ) -> Instant {
     let mut next_timeout = Instant::now() + Duration::from_millis(100);
     let mut event_count = 0;
@@ -561,15 +568,12 @@ async fn flush_core_outputs_to_network(
                         let _ = event_tx.send(QuickEvent::IceState(format!("{:?}", state)));
                     }
                     str0m::Event::MediaData(data) => {
-                        let kind = {
-                            let core_guard = core.lock().await;
-                            if Some(data.mid) == core_guard.video_mid {
-                                "video"
-                            } else if Some(data.mid) == core_guard.audio_mid {
-                                "audio"
-                            } else {
-                                "unknown"
-                            }
+                        let kind = if Some(data.mid) == *cached_video_mid {
+                            "video"
+                        } else if Some(data.mid) == *cached_audio_mid {
+                            "audio"
+                        } else {
+                            "unknown"
                         };
                         if kind != "unknown" {
                             let _ = event_tx.send(QuickEvent::MediaData(kind.to_string(), data.data));
@@ -584,6 +588,11 @@ async fn flush_core_outputs_to_network(
                             media_added.kind,
                             media_added.direction
                         );
+                        if media_added.kind == str0m::media::MediaKind::Video {
+                            *cached_video_mid = Some(media_added.mid);
+                        } else if media_added.kind == str0m::media::MediaKind::Audio {
+                            *cached_audio_mid = Some(media_added.mid);
+                        }
                     }
                     other => {
                         println!("Quick: Other str0m event: {:?}", other);
