@@ -10,6 +10,7 @@ use str0m::RtcConfig;
 
 static VERBOSE_LOGGING: OnceLock<bool> = OnceLock::new();
 static DTLS_CERTIFICATE: OnceLock<DtlsCert> = OnceLock::new();
+static RTC_CONFIG: OnceLock<RtcConfig> = OnceLock::new();
 
 #[inline(always)]
 pub fn is_verbose() -> bool {
@@ -21,6 +22,17 @@ pub fn get_dtls_cert() -> &'static DtlsCert {
         let provider = str0m::crypto::from_feature_flags();
         provider.dtls_provider.generate_certificate().unwrap()
     })
+}
+
+pub fn get_rtc_config() -> RtcConfig {
+    RTC_CONFIG.get_or_init(|| {
+        let cert = get_dtls_cert().clone();
+        RtcConfig::default()
+            .set_dtls_cert(cert)
+            .clear_codecs()
+            .enable_opus(true)
+            .enable_h264(true)
+    }).clone()
 }
 
 macro_rules! rams_println {
@@ -62,10 +74,7 @@ impl RAMSCore {
     pub fn new(role: SignalingRole) -> Self {
         rams_println!("RAMSCore: creating new core with role {:?}", role);
         let now = Instant::now();
-        let cert = get_dtls_cert().clone();
-        let rtc = RtcConfig::new()
-            .set_dtls_cert(cert)
-            .build(now);
+        let rtc = get_rtc_config().build(now);
         Self {
             rtc,
             signaling_handler: SignalingHandler::new(role),
