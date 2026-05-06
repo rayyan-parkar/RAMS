@@ -5,12 +5,22 @@ use str0m::media::{Direction, MediaKind};
 use crate::signaling::{SignalingHandler, SignalingMessage, SignalingRole, SignalingState};
 use str0m::media::{Mid};
 use std::sync::OnceLock;
+use str0m::config::DtlsCert;
+use str0m::RtcConfig;
 
 static VERBOSE_LOGGING: OnceLock<bool> = OnceLock::new();
+static DTLS_CERTIFICATE: OnceLock<DtlsCert> = OnceLock::new();
 
 #[inline(always)]
 pub fn is_verbose() -> bool {
     *VERBOSE_LOGGING.get_or_init(|| std::env::var("RAMS_VERBOSE").is_ok())
+}
+
+pub fn get_dtls_cert() -> &'static DtlsCert {
+    DTLS_CERTIFICATE.get_or_init(|| {
+        let provider = str0m::crypto::from_feature_flags();
+        provider.dtls_provider.generate_certificate().unwrap()
+    })
 }
 
 macro_rules! rams_println {
@@ -52,8 +62,12 @@ impl RAMSCore {
     pub fn new(role: SignalingRole) -> Self {
         rams_println!("RAMSCore: creating new core with role {:?}", role);
         let now = Instant::now();
+        let cert = get_dtls_cert().clone();
+        let rtc = RtcConfig::new()
+            .set_dtls_cert(cert)
+            .build(now);
         Self {
-            rtc: str0m::Rtc::new(now),
+            rtc,
             signaling_handler: SignalingHandler::new(role),
             pending_remote_candidates: Vec::new(),
             pending_offer: None,
