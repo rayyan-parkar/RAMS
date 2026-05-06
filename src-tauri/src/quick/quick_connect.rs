@@ -518,6 +518,17 @@ async fn flush_core_outputs_to_network(
     cached_video_mid: &mut Option<str0m::media::Mid>,
     cached_audio_mid: &mut Option<str0m::media::Mid>,
 ) -> Instant {
+    // Synchronize locally cached MIDs from the core if they are not yet set
+    if cached_video_mid.is_none() || cached_audio_mid.is_none() {
+        let guard = core.lock().await;
+        if cached_video_mid.is_none() {
+            *cached_video_mid = guard.video_mid;
+        }
+        if cached_audio_mid.is_none() {
+            *cached_audio_mid = guard.audio_mid;
+        }
+    }
+
     let mut next_timeout = Instant::now() + Duration::from_millis(100);
     let mut event_count = 0;
     const MAX_EVENTS_PER_DRAIN: usize = 32; // Prevent busy-wait on high-throughput systems
